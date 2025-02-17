@@ -85,16 +85,12 @@ def load_jsonl(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         return [json.loads(line) for line in f]
 
+
 class PerExampleLogProbsCallback(TrainerCallback):
-    def __init__(self, csv_file, tokenizer):
-        self.csv_file = csv_file
+    def __init__(self, output_dir, tokenizer):
+        self.output_dir = output_dir
         self.tokenizer = tokenizer
-        os.makedirs(os.path.dirname(os.path.abspath(self.csv_file)), exist_ok=True)
-        if os.path.exists(self.csv_file):
-            os.remove(self.csv_file)
-        with open(self.csv_file, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["row_id"])
+        os.makedirs(self.output_dir, exist_ok=True)
 
     def set_trainer(self, trainer):
         self.trainer = trainer
@@ -114,7 +110,10 @@ class PerExampleLogProbsCallback(TrainerCallback):
                 "logps_rejected_epoch_0": train_dataset[i]["ref_rejected_logps"],
             })
         initial_df = pd.DataFrame(initial_data)
-        initial_df.to_csv(self.csv_file, index=False)
+
+        reference_filename = os.path.join(self.output_dir, "epoch_0.csv")
+        initial_df.to_csv(reference_filename, index=False)
+        print(f"Saved reference log probabilities to {reference_filename}")
 
     def on_epoch_end(self, args, state, control, **kwargs):
         if not hasattr(self, "trainer") or self.trainer is None:
@@ -141,15 +140,21 @@ class PerExampleLogProbsCallback(TrainerCallback):
                 for i in range(batch_size):
                     epoch_data.append({
                         "row_id": example_id,
-                        "logps_chosen_epoch_1": chosen_logps[i].item(),
-                        "logps_rejected_epoch_1": rejected_logps[i].item(),
+                        f"logps_chosen_epoch_{state.epoch}": chosen_logps[i].item(),
+                        f"logps_rejected_epoch_{state.epoch}": rejected_logps[i].item(),
                     })
                     example_id += 1
 
         epoch_df = pd.DataFrame(epoch_data)
-        existing_df = pd.read_csv(self.csv_file)
-        merged_df = pd.merge(existing_df, epoch_df, on="row_id", how="outer")
-        merged_df.to_csv(self.csv_file, index=False)
+        device = next(model.parameters()).device
+        device_name = torch.cuda.get_device_name(device.index) if torch.cuda.is_available() else "cpu"
+        epoch_filename = os.path.join(
+            self.output_dir,
+            f"epoch_{state.epoch}_{device_name}.csv"
+        )
+
+        epoch_df.to_csv(epoch_filename, index=False)
+        print(f"Saved per-example log probabilities for epoch {state.epoch} on {device_name} to {epoch_filename}")
 
         model.train()
         return control
@@ -216,8 +221,7 @@ def main(args):
         eval_dataset=test_data,
         peft_config=peft_config,
     )
-    per_example_logger = PerExampleLogProbsCallback(
-        csv_file=os.path.join(args.output_dir, "per_example_metrics.csv"), tokenizer=tokenizer)
+    per_example_logger = PerExampleLogProbsCallback(output_dir=args.output_dir, tokenizer=tokenizer)
     trainer.add_callback(per_example_logger)
     per_example_logger.set_trainer(trainer)
 
@@ -237,9 +241,9 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=1500)
     parser.add_argument("--beta", type=float, default=0.01)
     parser.add_argument("--lora_rank", type=int, default=12)
-    parser.add_argument("--num_rows", type=int, default=1000)
-    parser.add_argument("--test_size", type=int, default=100)
-    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
+    parser.add_argument("--num_rows", type=int, default=20)
+    parser.add_argument("--test_size", type=int, default=10)
+    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")
     parser.add_argument("--logging_steps", type=int, default=100)
     args = parser.parse_args()
     main(args)
