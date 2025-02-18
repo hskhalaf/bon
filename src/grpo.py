@@ -139,23 +139,23 @@ def reward_func(completions, ground_truth, **kwargs):
 #         wandb.finish()
 
 # if __name__ == "__main__":
-#     parser = argparse.ArgumentParser()
-#     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
-#     parser.add_argument("--output_dir", type=str, default="./grpo_model")
-#     parser.add_argument("--per_device_train_batch_size", type=int, default=10)
-#     parser.add_argument("--per_device_eval_batch_size", type=int, default=10)
-#     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
-#     parser.add_argument("--epochs", type=int, default=10)
-#     parser.add_argument("--learning_rate", type=float, default=5e-5)
-#     parser.add_argument("--max_length", type=int, default=1500)
-#     parser.add_argument("--beta", type=float, default=0.01)
-#     parser.add_argument("--lora_rank", type=int, default=12)
-#     parser.add_argument("--num_rows", type=int, default=1000)
-#     parser.add_argument("--test_size", type=int, default=100)
-#     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
-#     parser.add_argument("--logging_steps", type=int, default=100)
-#     args = parser.parse_args()
-#     main(args)
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
+    # parser.add_argument("--output_dir", type=str, default="./grpo_model")
+    # parser.add_argument("--per_device_train_batch_size", type=int, default=10)
+    # parser.add_argument("--per_device_eval_batch_size", type=int, default=10)
+    # parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    # parser.add_argument("--epochs", type=int, default=10)
+    # parser.add_argument("--learning_rate", type=float, default=5e-5)
+    # parser.add_argument("--max_length", type=int, default=1500)
+    # parser.add_argument("--beta", type=float, default=0.01)
+    # parser.add_argument("--lora_rank", type=int, default=12)
+    # parser.add_argument("--num_rows", type=int, default=1000)
+    # parser.add_argument("--test_size", type=int, default=100)
+    # parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
+    # parser.add_argument("--logging_steps", type=int, default=100)
+    # args = parser.parse_args()
+    # main(args)
 
 import argparse
 import os
@@ -267,9 +267,22 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # [Previous arguments remain the same]
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
+    parser.add_argument("--output_dir", type=str, default="./grpo_model")
+    parser.add_argument("--per_device_train_batch_size", type=int, default=10)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=10)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--learning_rate", type=float, default=5e-5)
+    parser.add_argument("--max_length", type=int, default=1500)
+    parser.add_argument("--beta", type=float, default=0.01)
+    parser.add_argument("--lora_rank", type=int, default=12)
+    parser.add_argument("--num_rows", type=int, default=1000)
+    parser.add_argument("--test_size", type=int, default=100)
+    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
+    parser.add_argument("--logging_steps", type=int, default=100)
     args = parser.parse_args()
-    
+    main(args)    
     # Launch with distributed training if multiple GPUs are available
     if torch.cuda.device_count() > 1:
         torch.multiprocessing.spawn(main, args=(args,), nprocs=torch.cuda.device_count())
