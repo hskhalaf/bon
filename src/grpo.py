@@ -4,17 +4,23 @@ import random
 import torch
 import wandb
 import re
-from accelerate import Accelerator
 from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
+import torch.distributed as dist
 
+# Disable parallelism issues
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# Set random seeds
 random.seed(42)
 torch.manual_seed(42)
 torch.cuda.empty_cache()
 
+# Check if running in DDP mode
+def is_main_process():
+    return not dist.is_initialized() or dist.get_rank() == 0
 
 def extract_gsm8k_data(dataset, row_index):
     try:
@@ -27,11 +33,9 @@ def extract_gsm8k_data(dataset, row_index):
     except IndexError:
         return None
 
-
 def process_gsm8k(dataset):
     data = [result for i in range(len(dataset)) if (result := extract_gsm8k_data(dataset, i))]
     return Dataset.from_list(data)
-
 
 def tokenize_fn(batch, tokenizer, max_length):
     prompt = tokenizer(
@@ -67,22 +71,17 @@ def tokenize_fn(batch, tokenizer, max_length):
         "ground_truth_attention_mask": ground_truth["attention_mask"],
     }
 
-
 def reward_func(completions, ground_truth, **kwargs):
     matches = [re.search(r"\\boxed\{(.*?)\}", completion) for completion in completions]
     contents = [match.group(1) if match else "" for match in matches]
     return [1.0 if c == gt else 0.0 for c, gt in zip(contents, ground_truth)]
 
-
 def main(args):
-    # Initialize Accelerator for DDP
-    accelerator = Accelerator()
-    device = accelerator.device
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Only log to WandB on rank 0
-    is_main_process = accelerator.is_main_process
-
-    if is_main_process and args.report_to == "wandb":
+    # Initialize WandB only on the main process
+    if is_main_process() and args.report_to == "wandb":
         wandb.init(project="grpo_training", config=args.__dict__)
 
     # Load dataset
@@ -104,13 +103,9 @@ def main(args):
     test_data = test_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
     # Load model and move it to the correct device
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16)
-    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16)
-    ref_model.eval()
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
 
-    for param in ref_model.parameters():
-        param.requires_grad = False  # Freeze reference model
-
+    # LoRA configuration
     peft_config = LoraConfig(
         task_type="CAUSAL_LM",
         inference_mode=False,
@@ -130,15 +125,13 @@ def main(args):
         learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=100,
-        fp16=torch.cuda.is_available(),
+        fp16=True,  # Enable mixed precision
         num_generations=2,
         max_completion_length=512,
         log_completions=True,
     )
 
-    # Prepare data and model for DDP
-    model, train_data, test_data = accelerator.prepare(model, train_data, test_data)
-
+    # Initialize trainer
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=reward_func,
@@ -151,10 +144,9 @@ def main(args):
 
     trainer.train()
 
-    # Log final metrics only on rank 0
-    if is_main_process and args.report_to == "wandb":
+    # Close WandB properly
+    if is_main_process() and args.report_to == "wandb":
         wandb.finish()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -172,6 +164,6 @@ if __name__ == "__main__":
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=100)
-
     args = parser.parse_args()
+
     main(args)
