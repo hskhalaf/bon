@@ -69,142 +69,8 @@ def reward_func(completions, ground_truth, **kwargs):
     contents = [match.group(1) if match else "" for match in matches]
     return [1.0 if c == gt else 0.0 for c, gt in zip(contents, ground_truth)]
 
-
-# def main(args):
-#     device = torch.device("cuda" if torch.cuda.is_available() else "mps")
-#     if args.report_to == "wandb":
-#         wandb.init(project="grpo_training", config=args.__dict__)
-
-#     train_data = load_dataset("openai/gsm8k", "main", split="train")
-#     test_data = load_dataset("openai/gsm8k", "main", split="test")
-
-#     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-#     tokenizer.pad_token = tokenizer.eos_token
-
-#     if args.num_rows > 0:
-#         train_data = train_data.select(range(min(len(train_data), args.num_rows)))
-#     if args.test_size > 0:
-#         test_data = test_data.select(range(min(len(test_data), args.test_size)))
-
-#     train_data = process_gsm8k(train_data)
-#     test_data = process_gsm8k(test_data)
-
-#     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
-#     test_data = test_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
-
-#     model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
-#     ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
-#     ref_model.eval()
-#     for param in ref_model.parameters():
-#         param.requires_grad = False
-
-#     peft_config = LoraConfig(
-#         task_type="CAUSAL_LM",
-#         inference_mode=False,
-#         r=args.lora_rank,
-#         lora_alpha=16,
-#         lora_dropout=0.1,
-#     )
-
-#     training_args = GRPOConfig(
-#         output_dir=args.output_dir,
-#         per_device_train_batch_size=args.per_device_train_batch_size,
-#         per_device_eval_batch_size=args.per_device_eval_batch_size,
-#         beta=args.beta,
-#         logging_steps=args.logging_steps,
-#         num_train_epochs=args.epochs,
-#         gradient_accumulation_steps=args.gradient_accumulation_steps,
-#         learning_rate=args.learning_rate,
-#         eval_strategy="steps",
-#         eval_steps=100,
-#         fp16=torch.cuda.is_available(),
-#         num_generations=2,
-#         max_completion_length=512,
-#         log_completions=True,
-#     )
-
-#     trainer = GRPOTrainer(
-#         model=model,
-#         reward_funcs=reward_func,
-#         # ref_model=ref_model,
-#         processing_class=tokenizer,
-#         args=training_args,
-#         train_dataset=train_data,
-#         eval_dataset=test_data,
-#         peft_config=peft_config,
-#     )
-#     trainer.train()
-
-#     if args.report_to == "wandb":
-#         wandb.finish()
-
-# if __name__ == "__main__":
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
-    # parser.add_argument("--output_dir", type=str, default="./grpo_model")
-    # parser.add_argument("--per_device_train_batch_size", type=int, default=10)
-    # parser.add_argument("--per_device_eval_batch_size", type=int, default=10)
-    # parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
-    # parser.add_argument("--epochs", type=int, default=10)
-    # parser.add_argument("--learning_rate", type=float, default=5e-5)
-    # parser.add_argument("--max_length", type=int, default=1500)
-    # parser.add_argument("--beta", type=float, default=0.01)
-    # parser.add_argument("--lora_rank", type=int, default=12)
-    # parser.add_argument("--num_rows", type=int, default=1000)
-    # parser.add_argument("--test_size", type=int, default=100)
-    # parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
-    # parser.add_argument("--logging_steps", type=int, default=100)
-    # args = parser.parse_args()
-    # main(args)
-
-import argparse
-import os
-import random
-import torch
-import wandb
-from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from trl import GRPOConfig, GRPOTrainer
-from peft import LoraConfig
-from datasets import load_dataset
-import re
-from torch.distributed import init_process_group
-from torch.utils.data.distributed import DistributedSampler
-
-
-import argparse
-import os
-import random
-import torch
-import wandb
-from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from trl import GRPOConfig, GRPOTrainer
-from peft import LoraConfig
-from datasets import load_dataset
-import re
-from torch.distributed import init_process_group
-from torch.utils.data.distributed import DistributedSampler
-
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-random.seed(42)
-torch.manual_seed(42)
-torch.cuda.empty_cache()
-
-# [Previous functions remain the same until main()]
-
 def main(args):
-    # Initialize distributed training
-    if torch.cuda.device_count() > 1:
-        init_process_group(backend='nccl')
-        local_rank = int(os.environ.get("LOCAL_RANK", -1))
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f"cuda:{local_rank}")
-    else:
-        local_rank = -1
-        device = torch.device("cuda" if torch.cuda.is_available() else "mps")
-
-    if args.report_to == "wandb" and (local_rank == -1 or local_rank == 0):
+    if args.report_to == "wandb":
         wandb.init(project="grpo_training", config=args.__dict__)
 
     train_data = load_dataset("openai/gsm8k", "main", split="train")
@@ -224,13 +90,12 @@ def main(args):
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     test_data = test_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
-    # Create the base model
-    base_model = AutoModelForCausalLM.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
         torch_dtype=torch.float16,
-    ).to(device)
+        device_map="auto"  # Enable automatic device mapping
+    )
 
-    # Create LoRA config first
     peft_config = LoraConfig(
         task_type="CAUSAL_LM",
         inference_mode=False,
@@ -239,7 +104,6 @@ def main(args):
         lora_dropout=0.1,
     )
 
-    # Initialize trainer args before DDP wrapping
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -251,17 +115,14 @@ def main(args):
         learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=100,
-        fp16=torch.cuda.is_available(),
+        fp16=True,
         num_generations=2,
         max_completion_length=512,
         log_completions=True,
-        ddp_find_unused_parameters=False,
-        local_rank=local_rank,
     )
 
-    # Initialize the trainer with the base model
     trainer = GRPOTrainer(
-        model=base_model,
+        model=model,
         reward_funcs=reward_func,
         processing_class=tokenizer,
         args=training_args,
@@ -270,19 +131,9 @@ def main(args):
         peft_config=peft_config,
     )
 
-    # After trainer initialization, wrap the model in DDP if needed
-    if torch.cuda.device_count() > 1:
-        trainer.model = torch.nn.parallel.DistributedDataParallel(
-            trainer.model,
-            device_ids=[local_rank],
-            output_device=local_rank,
-            find_unused_parameters=False
-        )
-
-    # Start training
     trainer.train()
 
-    if args.report_to == "wandb" and (local_rank == -1 or local_rank == 0):
+    if args.report_to == "wandb":
         wandb.finish()
 
 if __name__ == "__main__":
