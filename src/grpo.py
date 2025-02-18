@@ -122,9 +122,6 @@ def main(args):
         max_completion_length=512,
         log_completions=True,
     )
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            print(f"Trainable parameter: {name}")
 
     trainer = GRPOTrainer(
         model=model,
@@ -135,8 +132,6 @@ def main(args):
         train_dataset=train_data,
         eval_dataset=test_data,
         peft_config=peft_config,
-        ddp_find_unused_parameters=False
-
     )
     trainer.train()
 
