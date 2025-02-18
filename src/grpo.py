@@ -1,20 +1,12 @@
 import argparse
 import os
-import json
 import random
 import torch
 import wandb
-import gzip
-import shutil
-import requests
-import csv
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
+from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
-import pandas as pd
-from load_huggingface import load_huggingface
-from typing import Union, Literal
 from datasets import load_dataset
 import re
 
@@ -126,7 +118,7 @@ def main(args):
         eval_strategy="steps",
         eval_steps=100,
         fp16=torch.cuda.is_available(),
-        num_generations=5,
+        num_generations=2,
         max_completion_length=512,
         log_completions=True,
     )
@@ -158,8 +150,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=1500)
     parser.add_argument("--beta", type=float, default=0.01)
     parser.add_argument("--lora_rank", type=int, default=12)
-    parser.add_argument("--num_rows", type=int, default=10)
-    parser.add_argument("--test_size", type=int, default=5)
+    parser.add_argument("--num_rows", type=int, default=1000)
+    parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=100)
     args = parser.parse_args()
