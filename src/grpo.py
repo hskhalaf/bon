@@ -69,7 +69,9 @@ def reward_func(completions, ground_truth, **kwargs):
     contents = [match.group(1) if match else "" for match in matches]
     return [1.0 if c == gt else 0.0 for c, gt in zip(contents, ground_truth)]
 
+
 def main(args):
+    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
     if args.report_to == "wandb":
         wandb.init(project="grpo_training", config=args.__dict__)
 
@@ -90,11 +92,11 @@ def main(args):
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     test_data = test_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name, 
-        torch_dtype=torch.float16,
-        device_map="auto"  # Enable automatic device mapping
-    )
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
+    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
+    ref_model.eval()
+    for param in ref_model.parameters():
+        param.requires_grad = False
 
     peft_config = LoraConfig(
         task_type="CAUSAL_LM",
@@ -115,7 +117,7 @@ def main(args):
         learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=100,
-        fp16=True,
+        fp16=torch.cuda.is_available(),
         num_generations=2,
         max_completion_length=512,
         log_completions=True,
@@ -124,13 +126,13 @@ def main(args):
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=reward_func,
+        # ref_model=ref_model,
         processing_class=tokenizer,
         args=training_args,
         train_dataset=train_data,
         eval_dataset=test_data,
         peft_config=peft_config,
     )
-
     trainer.train()
 
     if args.report_to == "wandb":
@@ -154,3 +156,4 @@ if __name__ == "__main__":
     parser.add_argument("--logging_steps", type=int, default=100)
     args = parser.parse_args()
     main(args)
+
