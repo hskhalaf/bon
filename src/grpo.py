@@ -3,17 +3,18 @@ import os
 import random
 import torch
 import wandb
-from datasets import Dataset
+import re
+from accelerate import Accelerator
+from datasets import Dataset, load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from trl import GRPOConfig, GRPOTrainer
 from peft import LoraConfig
-from datasets import load_dataset
-import re
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 random.seed(42)
 torch.manual_seed(42)
 torch.cuda.empty_cache()
+
 
 def extract_gsm8k_data(dataset, row_index):
     try:
@@ -26,9 +27,11 @@ def extract_gsm8k_data(dataset, row_index):
     except IndexError:
         return None
 
+
 def process_gsm8k(dataset):
     data = [result for i in range(len(dataset)) if (result := extract_gsm8k_data(dataset, i))]
     return Dataset.from_list(data)
+
 
 def tokenize_fn(batch, tokenizer, max_length):
     prompt = tokenizer(
@@ -54,7 +57,7 @@ def tokenize_fn(batch, tokenizer, max_length):
         max_length=max_length,
         return_attention_mask=True,
     )
-    
+
     return {
         "prompt_input_ids": prompt["input_ids"],
         "prompt_attention_mask": prompt["attention_mask"],
@@ -64,6 +67,7 @@ def tokenize_fn(batch, tokenizer, max_length):
         "ground_truth_attention_mask": ground_truth["attention_mask"],
     }
 
+
 def reward_func(completions, ground_truth, **kwargs):
     matches = [re.search(r"\\boxed\{(.*?)\}", completion) for completion in completions]
     contents = [match.group(1) if match else "" for match in matches]
@@ -71,10 +75,17 @@ def reward_func(completions, ground_truth, **kwargs):
 
 
 def main(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
-    if args.report_to == "wandb":
+    # Initialize Accelerator for DDP
+    accelerator = Accelerator()
+    device = accelerator.device
+
+    # Only log to WandB on rank 0
+    is_main_process = accelerator.is_main_process
+
+    if is_main_process and args.report_to == "wandb":
         wandb.init(project="grpo_training", config=args.__dict__)
 
+    # Load dataset
     train_data = load_dataset("openai/gsm8k", "main", split="train")
     test_data = load_dataset("openai/gsm8k", "main", split="test")
 
@@ -92,11 +103,13 @@ def main(args):
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     test_data = test_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
-    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
+    # Load model and move it to the correct device
+    model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16)
+    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16)
     ref_model.eval()
+
     for param in ref_model.parameters():
-        param.requires_grad = False
+        param.requires_grad = False  # Freeze reference model
 
     peft_config = LoraConfig(
         task_type="CAUSAL_LM",
@@ -123,20 +136,25 @@ def main(args):
         log_completions=True,
     )
 
+    # Prepare data and model for DDP
+    model, train_data, test_data = accelerator.prepare(model, train_data, test_data)
+
     trainer = GRPOTrainer(
         model=model,
         reward_funcs=reward_func,
-        # ref_model=ref_model,
         processing_class=tokenizer,
         args=training_args,
         train_dataset=train_data,
         eval_dataset=test_data,
         peft_config=peft_config,
     )
+
     trainer.train()
 
-    if args.report_to == "wandb":
+    # Log final metrics only on rank 0
+    if is_main_process and args.report_to == "wandb":
         wandb.finish()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -154,6 +172,6 @@ if __name__ == "__main__":
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=100)
+
     args = parser.parse_args()
     main(args)
-
