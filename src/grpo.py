@@ -172,6 +172,27 @@ from torch.distributed import init_process_group
 from torch.utils.data.distributed import DistributedSampler
 
 
+import argparse
+import os
+import random
+import torch
+import wandb
+from datasets import Dataset
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from trl import GRPOConfig, GRPOTrainer
+from peft import LoraConfig
+from datasets import load_dataset
+import re
+from torch.distributed import init_process_group
+from torch.utils.data.distributed import DistributedSampler
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+random.seed(42)
+torch.manual_seed(42)
+torch.cuda.empty_cache()
+
+# [Previous functions remain the same until main()]
+
 def main(args):
     # Initialize distributed training
     if torch.cuda.device_count() > 1:
@@ -180,6 +201,7 @@ def main(args):
         torch.cuda.set_device(local_rank)
         device = torch.device(f"cuda:{local_rank}")
     else:
+        local_rank = -1
         device = torch.device("cuda" if torch.cuda.is_available() else "mps")
 
     if args.report_to == "wandb" and (local_rank == -1 or local_rank == 0):
@@ -202,28 +224,13 @@ def main(args):
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     test_data = test_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
-    model = AutoModelForCausalLM.from_pretrained(
+    # Create the base model
+    base_model = AutoModelForCausalLM.from_pretrained(
         args.model_name, 
         torch_dtype=torch.float16,
-        device_map="auto"  # This helps with automatic device assignment
     ).to(device)
 
-    if torch.cuda.device_count() > 1:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[local_rank],
-            output_device=local_rank
-        )
-
-    ref_model = AutoModelForCausalLM.from_pretrained(
-        args.model_name, 
-        torch_dtype=torch.float16,
-        device_map="auto"
-    ).to(device)
-    ref_model.eval()
-    for param in ref_model.parameters():
-        param.requires_grad = False
-
+    # Create LoRA config first
     peft_config = LoraConfig(
         task_type="CAUSAL_LM",
         inference_mode=False,
@@ -232,6 +239,7 @@ def main(args):
         lora_dropout=0.1,
     )
 
+    # Initialize trainer args before DDP wrapping
     training_args = GRPOConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
@@ -247,12 +255,13 @@ def main(args):
         num_generations=2,
         max_completion_length=512,
         log_completions=True,
-        ddp_find_unused_parameters=False,  # Important for DDP
-        local_rank=local_rank if torch.cuda.device_count() > 1 else -1,
+        ddp_find_unused_parameters=False,
+        local_rank=local_rank,
     )
 
+    # Initialize the trainer with the base model
     trainer = GRPOTrainer(
-        model=model,
+        model=base_model,
         reward_funcs=reward_func,
         processing_class=tokenizer,
         args=training_args,
@@ -260,6 +269,17 @@ def main(args):
         eval_dataset=test_data,
         peft_config=peft_config,
     )
+
+    # After trainer initialization, wrap the model in DDP if needed
+    if torch.cuda.device_count() > 1:
+        trainer.model = torch.nn.parallel.DistributedDataParallel(
+            trainer.model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False
+        )
+
+    # Start training
     trainer.train()
 
     if args.report_to == "wandb" and (local_rank == -1 or local_rank == 0):
@@ -282,9 +302,4 @@ if __name__ == "__main__":
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=100)
     args = parser.parse_args()
-    main(args)    
-    # Launch with distributed training if multiple GPUs are available
-    if torch.cuda.device_count() > 1:
-        torch.multiprocessing.spawn(main, args=(args,), nprocs=torch.cuda.device_count())
-    else:
-        main(args)
+    main(args)
