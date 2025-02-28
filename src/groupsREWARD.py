@@ -55,6 +55,7 @@ def process_default(dataset):
 
 def tokenize_fn(batch, tokenizer, max_length):
     formatted_prompts = [tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False) for p in batch["prompt"]]
+    formatted_prompts = [p for p in batch["prompt"]]
     formatted_chosen = [
         tokenizer.apply_chat_template([
             {"role": "user", "content": batch["prompt"][i]}, 
@@ -84,6 +85,71 @@ def tokenize_fn(batch, tokenizer, max_length):
         "rejected_input_ids": rejected["input_ids"],
         "rejected_attention_mask": rejected["attention_mask"],
     }
+
+def tokenize_eval_fn(batch, tokenizer, max_length):
+    formatted_prompts = [tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False) for p in batch["prompt"]]
+    formatted_prompts = [p for p in batch["prompt"]]
+    formatted_chosen = [
+        tokenizer.apply_chat_template([
+            {"role": "user", "content": batch["prompt"][i]}, 
+            {"role": "assistant", "content": batch["chosen"][i]}
+        ], tokenize=False) 
+        for i in range(len(batch["prompt"]))
+    ]
+    formatted_rejected = [
+        tokenizer.apply_chat_template([
+            {"role": "user", "content": batch["prompt"][i]}, 
+            {"role": "assistant", "content": batch["rejected"][i]}
+        ], tokenize=False) 
+        for i in range(len(batch["prompt"]))
+    ]
+    
+    prompt = tokenizer(formatted_prompts, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+    chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+    rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+
+    return {
+        "row_id": batch["row_id"],
+        "dID": batch["dID"],
+        "prompt_input_ids": prompt["input_ids"],
+        "prompt_attention_mask": prompt["attention_mask"],
+        "input_ids_chosen": chosen["input_ids"],
+        "attention_mask_chosen": chosen["attention_mask"],
+        "input_ids_rejected": rejected["input_ids"],
+        "attention_mask_rejected": rejected["attention_mask"],
+    }
+
+# def tokenize_fn(batch, tokenizer, max_length):
+#     prompt = tokenizer(batch["prompt"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+#     chosen = tokenizer(batch["chosen"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+#     rejected = tokenizer(batch["rejected"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+
+#     return {
+#         "row_id": batch["row_id"],
+#         "dID": batch["dID"],
+#         "prompt_input_ids": prompt["input_ids"],
+#         "prompt_attention_mask": prompt["attention_mask"],
+#         "chosen_input_ids": chosen["input_ids"],
+#         "chosen_attention_mask": chosen["attention_mask"],
+#         "rejected_input_ids": rejected["input_ids"],
+#         "rejected_attention_mask": rejected["attention_mask"],
+#     }
+
+# def tokenize_eval_fn(batch, tokenizer, max_length):
+#     prompt = tokenizer(batch["prompt"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+#     chosen = tokenizer(batch["chosen"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+#     rejected = tokenizer(batch["rejected"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+
+#     return {
+#         "row_id": batch["row_id"],
+#         "dID": batch["dID"],
+#         "prompt_input_ids": prompt["input_ids"],
+#         "prompt_attention_mask": prompt["attention_mask"],
+#         "input_ids_chosen": chosen["input_ids"],
+#         "attention_mask_chosen": chosen["attention_mask"],
+#         "input_ids_rejected": rejected["input_ids"],
+#         "attention_mask_rejected": rejected["attention_mask"],
+#     }
 
 def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
     if num_samples > 0:
@@ -131,7 +197,7 @@ def main(args):
     print(f"Using device: {device}, FP16: {use_fp16}")
 
     if args.report_to == "wandb":
-        wandb.init(project="dpo_group_training", config=args.__dict__)
+        wandb.init(project="reward_group_training", config=args.__dict__)
 
     base_url = "https://huggingface.co/datasets/Anthropic/hh-rlhf/resolve/main/helpful-base/"
     for file in ["train.jsonl.gz", "test.jsonl.gz"]:
@@ -164,12 +230,12 @@ def main(args):
         batch_size=args.per_device_train_batch_size
     )
     test_data_helpful = test_data_helpful.map(
-        lambda batch: tokenize_fn(batch, tokenizer, args.max_length), 
+        lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), 
         batched=True, 
         batch_size=args.per_device_train_batch_size
     )
     test_data_harmless = test_data_harmless.map(
-        lambda batch: tokenize_fn(batch, tokenizer, args.max_length), 
+        lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), 
         batched=True, 
         batch_size=args.per_device_train_batch_size
     )
@@ -187,14 +253,14 @@ def main(args):
     
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    peft_config = LoraConfig(
-        task_type="SEQ_CLS",
-        inference_mode=False,
-        r=args.lora_rank,
-        lora_alpha=16,
-        lora_dropout=0.1,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    )
+    # peft_config = LoraConfig(
+    #     task_type="SEQ_CLS",
+    #     inference_mode=False,
+    #     r=args.lora_rank,
+    #     lora_alpha=16,
+    #     lora_dropout=0.1,
+    #     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    # )
 
     training_args = RewardConfig(
         output_dir=args.output_dir,
@@ -206,7 +272,7 @@ def main(args):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         eval_strategy="steps",
-        eval_steps=100,
+        eval_steps=5,
         fp16=use_fp16,
         optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
     )
@@ -216,7 +282,7 @@ def main(args):
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
-        peft_config=peft_config,
+        # peft_config=peft_config,
         eval_dataset=test_data,
     )
 
@@ -233,17 +299,17 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="google/gemma-2-2b-it")
+    parser.add_argument("--model_name", type=str, default="gpt2")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--beta", type=float, default=0.01)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=1000)
-    parser.add_argument("--test_size", type=int, default=100)
+    parser.add_argument("--num_rows", type=int, default=200)
+    parser.add_argument("--test_size", type=int, default=50)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")
     parser.add_argument("--logging_steps", type=int, default=20)
     parser.add_argument("--weight", type=float, default=0.8)

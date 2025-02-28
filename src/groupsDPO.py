@@ -54,9 +54,26 @@ def process_default(dataset):
     return Dataset.from_pandas(df)
 
 def tokenize_fn(batch, tokenizer, max_length):
-    prompt = tokenizer(batch["prompt"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-    chosen = tokenizer(batch["chosen"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-    rejected = tokenizer(batch["rejected"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+    formatted_prompts = [tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False) for p in batch["prompt"]]
+    formatted_prompts = [p for p in batch["prompt"]]
+    formatted_chosen = [
+        tokenizer.apply_chat_template([
+            {"role": "user", "content": batch["prompt"][i]}, 
+            {"role": "assistant", "content": batch["chosen"][i]}
+        ], tokenize=False) 
+        for i in range(len(batch["prompt"]))
+    ]
+    formatted_rejected = [
+        tokenizer.apply_chat_template([
+            {"role": "user", "content": batch["prompt"][i]}, 
+            {"role": "assistant", "content": batch["rejected"][i]}
+        ], tokenize=False) 
+        for i in range(len(batch["prompt"]))
+    ]
+    
+    prompt = tokenizer(formatted_prompts, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+    chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+    rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
 
     return {
         "row_id": batch["row_id"],
