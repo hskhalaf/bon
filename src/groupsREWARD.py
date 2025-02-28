@@ -118,13 +118,12 @@ class CustomEvalCallback(TrainerCallback):
                        "harmlessness_eval_loss": results_harmless["eval_loss"]})
             
 def main(args):
-    # Set up device and ensure we're using compatible settings
     if torch.cuda.is_available():
         device = torch.device("cuda")
         use_fp16 = True
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
-        use_fp16 = False  # MPS doesn't fully support fp16 yet
+        use_fp16 = False
     else:
         device = torch.device("cpu")
         use_fp16 = False
@@ -159,7 +158,6 @@ def main(args):
     test_data_helpful = process_default(test_data_helpful)
     test_data_harmless = process_default(test_data_harmless)
 
-    # Apply tokenization with chat template
     train_data = train_data.map(
         lambda batch: tokenize_fn(batch, tokenizer, args.max_length), 
         batched=True, 
@@ -178,7 +176,6 @@ def main(args):
     
     test_data = concatenate_datasets([test_data_helpful, test_data_harmless])
 
-    # Create model with proper configuration
     model_dtype = torch.float16 if use_fp16 else torch.float32
     print(f"Loading model with dtype: {model_dtype}")
     
@@ -188,7 +185,6 @@ def main(args):
         torch_dtype=model_dtype,
     ).to(device)
     
-    # Ensure pad token is properly set in the model config
     model.config.pad_token_id = tokenizer.pad_token_id
 
     peft_config = LoraConfig(
@@ -239,13 +235,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="google/gemma-2-2b-it")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4)  # Reduced batch size to avoid OOM
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)  # Increased to compensate for smaller batch
+    parser.add_argument("--per_device_train_batch_size", type=int, default=4)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
-    parser.add_argument("--max_length", type=int, default=1024)  # Reduced max length to avoid memory issues
-    parser.add_argument("--beta", type=float, default=0.0001)
-    parser.add_argument("--lora_rank", type=int, default=8)  # Reduced rank for efficiency
+    parser.add_argument("--max_length", type=int, default=1024)
+    parser.add_argument("--beta", type=float, default=0.01)
+    parser.add_argument("--lora_rank", type=int, default=8) 
     parser.add_argument("--num_rows", type=int, default=1000)
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")

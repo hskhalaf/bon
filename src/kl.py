@@ -322,6 +322,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_rows", type=int, default=1000)
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")
-    parser.add_argument("--logging_steps", type=int, default=100)
+    parser.add_argument("--logging_steps", type=int, default=20)
     args = parser.parse_args()
     main(args)
