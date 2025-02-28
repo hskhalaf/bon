@@ -253,14 +253,14 @@ def main(args):
     
     model.config.pad_token_id = tokenizer.pad_token_id
 
-    # peft_config = LoraConfig(
-    #     task_type="SEQ_CLS",
-    #     inference_mode=False,
-    #     r=args.lora_rank,
-    #     lora_alpha=16,
-    #     lora_dropout=0.1,
-    #     target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    # )
+    peft_config = LoraConfig(
+        task_type="SEQ_CLS",
+        inference_mode=False,
+        r=args.lora_rank,
+        lora_alpha=16,
+        lora_dropout=0.1,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    )
 
     training_args = RewardConfig(
         output_dir=args.output_dir,
@@ -282,7 +282,7 @@ def main(args):
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
-        # peft_config=peft_config,
+        peft_config=peft_config,
         eval_dataset=test_data,
     )
 
@@ -299,20 +299,18 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="gpt2")
+    parser.add_argument("--model_name", type=str, default="google/gemma-2-2b-it")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1024)
-    parser.add_argument("--beta", type=float, default=0.01)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=200)
-    parser.add_argument("--test_size", type=int, default=50)
-    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")
+    parser.add_argument("--num_rows", type=int, default=50000)
+    parser.add_argument("--test_size", type=int, default=1000)
+    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
-    parser.add_argument("--weight", type=float, default=0.8)
+    parser.add_argument("--weight", type=float, default=0.5)
     args = parser.parse_args()
-
     main(args)
