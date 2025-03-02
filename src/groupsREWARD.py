@@ -143,12 +143,12 @@ def main(args):
     test_data_harmless = process_default(test_data_harmless)
 
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
-    model_dtype = torch.float16 if use_fp16 else torch.float32
+    model_dtype = torch.bfloat16 if use_fp16 else torch.bfloat32
     
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
         num_labels=1,
-        torch_dtype=model_dtype,
+        torch_dtype=torch.bfloat16
     ).to(device)
     
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -173,7 +173,6 @@ def main(args):
         learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=5,
-        fp16=use_fp16,
         optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
     )
 
@@ -208,8 +207,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=100)
-    parser.add_argument("--test_size", type=int, default=10)
+    parser.add_argument("--num_rows", type=int, default=1000)
+    parser.add_argument("--test_size", type=int, default=200)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
     parser.add_argument("--weight", type=float, default=0.5)
