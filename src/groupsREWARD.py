@@ -109,19 +109,51 @@ def tokenize_fct(dataset, tokenizer):
 
     return dataset.map(process_sample)
 
+from contextlib import contextmanager
+from transformers import TrainerCallback
+
+@contextmanager
+def disable_evaluate_callback(trainer, callback_cls):
+    """
+    Temporarily removes any callback of type callback_cls 
+    from trainer.callback_handler.callbacks.
+    """
+    callbacks_backup = trainer.callback_handler.callbacks
+    # Filter out the specific callback we want to disable
+    trainer.callback_handler.callbacks = [
+        cb for cb in callbacks_backup
+        if not isinstance(cb, callback_cls)
+    ]
+    yield
+    # Restore the original callbacks
+    trainer.callback_handler.callbacks = callbacks_backup
+
+
 class CustomEvalCallback(TrainerCallback):
-    def __init__(self, trainer, eval_dataset_helpful, eval_dataset_harmless):
+    def __init__(self, trainer, test_data_helpful, test_data_harmless):
+        super().__init__()
         self.trainer = trainer
-        self.eval_dataset_helpful = eval_dataset_helpful
-        self.eval_dataset_harmless = eval_dataset_harmless
-    
-    def on_evaluate(self, args, state, control, **kwargs):
-        results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
-        results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
+        self.eval_dataset_helpful = test_data_helpful
+        self.eval_dataset_harmless = test_data_harmless
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if args.report_to == "wandb":
+            wandb.log({
+                "default_test_eval_loss": metrics["eval_loss"],
+                "step": state.global_step
+            })
+
+        with disable_evaluate_callback(self.trainer, CustomEvalCallback):
+            results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
+            results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
         
         if args.report_to == "wandb":
-            wandb.log({"helpfulness_eval_loss": results_helpful["eval_loss"],
-                       "harmlessness_eval_loss": results_harmless["eval_loss"]})
+            wandb.log({
+                "helpful_eval_loss": results_helpful["eval_loss"],
+                "harmless_eval_loss": results_harmless["eval_loss"],
+                "step": state.global_step
+            })
+
             
 def main(args):
     if torch.cuda.is_available():
