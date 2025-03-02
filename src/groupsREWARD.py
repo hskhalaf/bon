@@ -119,13 +119,11 @@ def disable_evaluate_callback(trainer, callback_cls):
     from trainer.callback_handler.callbacks.
     """
     callbacks_backup = trainer.callback_handler.callbacks
-    # Filter out the specific callback we want to disable
     trainer.callback_handler.callbacks = [
         cb for cb in callbacks_backup
         if not isinstance(cb, callback_cls)
     ]
     yield
-    # Restore the original callbacks
     trainer.callback_handler.callbacks = callbacks_backup
 
 
@@ -197,7 +195,6 @@ def main(args):
     test_data_harmless = process_default(test_data_harmless)
 
     train_data = tokenize_fct(train_data, tokenizer)
-    test_data = tokenize_fct(test_data, tokenizer)
     test_data_helpful = tokenize_fct(test_data_helpful, tokenizer)
     test_data_harmless = tokenize_fct(test_data_harmless, tokenizer)
     
@@ -230,6 +227,7 @@ def main(args):
         eval_strategy="steps",
         eval_steps=args.logging_steps,
         optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
+        report_to=args.report_to
     )
 
     trainer = RewardTrainer(
