@@ -196,9 +196,6 @@ def main(args):
     test_data_helpful = process_default(test_data_helpful)
     test_data_harmless = process_default(test_data_harmless)
 
-    test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
-    model_dtype = torch.bfloat16 if use_fp16 else torch.bfloat32
-
     train_data = tokenize_fct(train_data, tokenizer)
     test_data = tokenize_fct(test_data, tokenizer)
     test_data_helpful = tokenize_fct(test_data_helpful, tokenizer)
@@ -231,7 +228,7 @@ def main(args):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         eval_strategy="steps",
-        eval_steps=5,
+        eval_steps=args.logging_steps,
         optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
     )
 
@@ -241,7 +238,7 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=test_data,
+        eval_dataset=None,
     )
 
     eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
