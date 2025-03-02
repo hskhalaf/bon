@@ -34,122 +34,40 @@ def load_jsonl(file_path):
     with open(file_path, 'r', encoding='utf-8') as f:
         return [json.loads(line) for line in f]
 
-def prompt(text):
-    last_assistant = text.rfind("Assistant:")
-    return text[:last_assistant].strip()
-
-def answer(text):
-    last_assistant = text.rfind("Assistant:")
-    return text[last_assistant:].strip()
+def process_conversation(text):
+    lines = text.strip().splitlines()
+    messages = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            role, content = line.split(":", 1)
+            if role.strip() == "Human":
+                role = "user"
+            elif role.strip() == "Assistant":
+                role = "assistant"
+            messages.append({"role": role.strip(), "content": content.strip()})
+    if not messages or messages[0]["role"] != "user":
+        return []
+    for i in range(1, len(messages)):
+        expected_role = "assistant" if i % 2 == 1 else "user"
+        if messages[i]["role"] != expected_role:
+            return []
+    return messages
 
 def process_default(dataset):
     data_list = dataset.to_list()
-    df = pd.DataFrame({
-        "prompt": [prompt(text["chosen"]) for text in data_list],
-        "chosen": [answer(text["chosen"]) for text in data_list],
-        "rejected": [answer(text["rejected"]) for text in data_list],
-        "dID": [text["dID"] for text in data_list],
-    })
+    valid_rows = []
+    for text in data_list:
+        chosen = process_conversation(text["chosen"])
+        rejected = process_conversation(text["rejected"])
+        if chosen and rejected:
+            valid_rows.append({"chosen": chosen, "rejected": rejected, "dID": text["dID"]})
+    df = pd.DataFrame(valid_rows)
     df["row_id"] = df.index.values
     return Dataset.from_pandas(df)
 
-def tokenize_fn(batch, tokenizer, max_length):
-    formatted_prompts = [tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False) for p in batch["prompt"]]
-    formatted_prompts = [p for p in batch["prompt"]]
-    formatted_chosen = [
-        tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]}, 
-            {"role": "assistant", "content": batch["chosen"][i]}
-        ], tokenize=False) 
-        for i in range(len(batch["prompt"]))
-    ]
-    formatted_rejected = [
-        tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]}, 
-            {"role": "assistant", "content": batch["rejected"][i]}
-        ], tokenize=False) 
-        for i in range(len(batch["prompt"]))
-    ]
-    
-    prompt = tokenizer(formatted_prompts, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-    chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-    rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-
-    return {
-        "row_id": batch["row_id"],
-        "dID": batch["dID"],
-        "prompt_input_ids": prompt["input_ids"],
-        "prompt_attention_mask": prompt["attention_mask"],
-        "chosen_input_ids": chosen["input_ids"],
-        "chosen_attention_mask": chosen["attention_mask"],
-        "rejected_input_ids": rejected["input_ids"],
-        "rejected_attention_mask": rejected["attention_mask"],
-    }
-
-def tokenize_eval_fn(batch, tokenizer, max_length):
-    formatted_prompts = [tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False) for p in batch["prompt"]]
-    formatted_prompts = [p for p in batch["prompt"]]
-    formatted_chosen = [
-        tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]}, 
-            {"role": "assistant", "content": batch["chosen"][i]}
-        ], tokenize=False) 
-        for i in range(len(batch["prompt"]))
-    ]
-    formatted_rejected = [
-        tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]}, 
-            {"role": "assistant", "content": batch["rejected"][i]}
-        ], tokenize=False) 
-        for i in range(len(batch["prompt"]))
-    ]
-    
-    prompt = tokenizer(formatted_prompts, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-    chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-    rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-
-    return {
-        "row_id": batch["row_id"],
-        "dID": batch["dID"],
-        "prompt_input_ids": prompt["input_ids"],
-        "prompt_attention_mask": prompt["attention_mask"],
-        "input_ids_chosen": chosen["input_ids"],
-        "attention_mask_chosen": chosen["attention_mask"],
-        "input_ids_rejected": rejected["input_ids"],
-        "attention_mask_rejected": rejected["attention_mask"],
-    }
-
-# def tokenize_fn(batch, tokenizer, max_length):
-#     prompt = tokenizer(batch["prompt"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-#     chosen = tokenizer(batch["chosen"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-#     rejected = tokenizer(batch["rejected"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-
-#     return {
-#         "row_id": batch["row_id"],
-#         "dID": batch["dID"],
-#         "prompt_input_ids": prompt["input_ids"],
-#         "prompt_attention_mask": prompt["attention_mask"],
-#         "chosen_input_ids": chosen["input_ids"],
-#         "chosen_attention_mask": chosen["attention_mask"],
-#         "rejected_input_ids": rejected["input_ids"],
-#         "rejected_attention_mask": rejected["attention_mask"],
-#     }
-
-# def tokenize_eval_fn(batch, tokenizer, max_length):
-#     prompt = tokenizer(batch["prompt"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-#     chosen = tokenizer(batch["chosen"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-#     rejected = tokenizer(batch["rejected"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-
-#     return {
-#         "row_id": batch["row_id"],
-#         "dID": batch["dID"],
-#         "prompt_input_ids": prompt["input_ids"],
-#         "prompt_attention_mask": prompt["attention_mask"],
-#         "input_ids_chosen": chosen["input_ids"],
-#         "attention_mask_chosen": chosen["attention_mask"],
-#         "input_ids_rejected": rejected["input_ids"],
-#         "attention_mask_rejected": rejected["attention_mask"],
-#     }
 
 def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
     if num_samples > 0:
@@ -215,7 +133,7 @@ def main(args):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
-
+    
     train_data = sample_and_shuffle(train_data_helpful, train_data_harmless, args.num_rows, args.weight)
     test_data_helpful = sample_and_shuffle(test_data_helpful, Dataset.from_list([]), args.test_size, 1)
     test_data_harmless = sample_and_shuffle(Dataset.from_list([]), test_data_harmless, args.test_size, 0)
@@ -224,26 +142,8 @@ def main(args):
     test_data_helpful = process_default(test_data_helpful)
     test_data_harmless = process_default(test_data_harmless)
 
-    train_data = train_data.map(
-        lambda batch: tokenize_fn(batch, tokenizer, args.max_length), 
-        batched=True, 
-        batch_size=args.per_device_train_batch_size
-    )
-    test_data_helpful = test_data_helpful.map(
-        lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), 
-        batched=True, 
-        batch_size=args.per_device_train_batch_size
-    )
-    test_data_harmless = test_data_harmless.map(
-        lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), 
-        batched=True, 
-        batch_size=args.per_device_train_batch_size
-    )
-    
-    test_data = concatenate_datasets([test_data_helpful, test_data_harmless])
-
+    test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     model_dtype = torch.float16 if use_fp16 else torch.float32
-    print(f"Loading model with dtype: {model_dtype}")
     
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
@@ -252,7 +152,7 @@ def main(args):
     ).to(device)
     
     model.config.pad_token_id = tokenizer.pad_token_id
-
+    
     peft_config = LoraConfig(
         task_type="SEQ_CLS",
         inference_mode=False,
@@ -302,13 +202,14 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, default="google/gemma-2-2b-it")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=8)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=50000)
-    parser.add_argument("--test_size", type=int, default=1000)
+    parser.add_argument("--num_rows", type=int, default=100)
+    parser.add_argument("--test_size", type=int, default=10)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
     parser.add_argument("--weight", type=float, default=0.5)
