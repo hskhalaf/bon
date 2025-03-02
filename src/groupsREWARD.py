@@ -138,20 +138,21 @@ class CustomEvalCallback(TrainerCallback):
         if args.report_to == "wandb":
             wandb.log({
                 "default_test_eval_loss": metrics["eval_loss"],
-                "step": state.global_step
-            })
-        print("on_evaluate triggered!", metrics)
+                },
+                step = state.global_step
+                )
+
         with disable_evaluate_callback(self.trainer, CustomEvalCallback):
             results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
             results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
-        print("on_evaluate results_helpful!", results_helpful)
-        print("on_evaluate results_harmless!", results_harmless)  
+
         if args.report_to == "wandb":
             wandb.log({
                 "helpful_eval_loss": results_helpful["eval_loss"],
                 "harmless_eval_loss": results_harmless["eval_loss"],
-                "step": state.global_step
-            })
+            },
+                step = state.global_step
+            )
 
             
 def main(args):
