@@ -109,52 +109,52 @@ def tokenize_fct(dataset, tokenizer):
 
     return dataset.map(process_sample)
 
-from contextlib import contextmanager
-from transformers import TrainerCallback
+# from contextlib import contextmanager
+# from transformers import TrainerCallback
 
-@contextmanager
-def disable_evaluate_callback(trainer, callback_cls):
-    """
-    Temporarily removes any callback of type callback_cls 
-    from trainer.callback_handler.callbacks.
-    """
-    callbacks_backup = trainer.callback_handler.callbacks
-    trainer.callback_handler.callbacks = [
-        cb for cb in callbacks_backup
-        if not isinstance(cb, callback_cls)
-    ]
-    yield
-    trainer.callback_handler.callbacks = callbacks_backup
+# @contextmanager
+# def disable_evaluate_callback(trainer, callback_cls):
+#     """
+#     Temporarily removes any callback of type callback_cls 
+#     from trainer.callback_handler.callbacks.
+#     """
+#     callbacks_backup = trainer.callback_handler.callbacks
+#     trainer.callback_handler.callbacks = [
+#         cb for cb in callbacks_backup
+#         if not isinstance(cb, callback_cls)
+#     ]
+#     yield
+#     trainer.callback_handler.callbacks = callbacks_backup
 
 
-class CustomEvalCallback(TrainerCallback):
-    def __init__(self, trainer, test_data_helpful, test_data_harmless):
-        super().__init__()
-        self.trainer = trainer
-        self.eval_dataset_helpful = test_data_helpful
-        self.eval_dataset_harmless = test_data_harmless
+# class CustomEvalCallback(TrainerCallback):
+#     def __init__(self, trainer, test_data_helpful, test_data_harmless):
+#         super().__init__()
+#         self.trainer = trainer
+#         self.eval_dataset_helpful = test_data_helpful
+#         self.eval_dataset_harmless = test_data_harmless
 
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        if hasattr(args, "local_rank") and args.local_rank not in (0, -1):
-            return control
-        if args.report_to == "wandb":
-            wandb.log({
-                "default_test_eval_loss": metrics["eval_loss"],
-                },
-                step = state.global_step
-                )
+#     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+#         if hasattr(args, "local_rank") and args.local_rank not in (0, -1):
+#             return control
+#         if args.report_to == "wandb":
+#             wandb.log({
+#                 "default_test_eval_loss": metrics["eval_loss"],
+#                 },
+#                 step = state.global_step
+#                 )
 
-        with disable_evaluate_callback(self.trainer, CustomEvalCallback):
-            results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
-            results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
+#         with disable_evaluate_callback(self.trainer, CustomEvalCallback):
+#             results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
+#             results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
 
-        if args.report_to == "wandb":
-            wandb.log({
-                "helpful_eval_loss": results_helpful["eval_loss"],
-                "harmless_eval_loss": results_harmless["eval_loss"],
-            },
-                step = state.global_step
-            )
+#         if args.report_to == "wandb":
+#             wandb.log({
+#                 "helpful_eval_loss": results_helpful["eval_loss"],
+#                 "harmless_eval_loss": results_harmless["eval_loss"],
+#             },
+#                 step = state.global_step
+#             )
 
             
 def main(args):
@@ -201,6 +201,8 @@ def main(args):
     train_data = tokenize_fct(train_data, tokenizer)
     test_data_helpful = tokenize_fct(test_data_helpful, tokenizer)
     test_data_harmless = tokenize_fct(test_data_harmless, tokenizer)
+
+    test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
@@ -241,11 +243,11 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=dummy_test,
+        eval_dataset=test_data,
     )
 
-    eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
-    trainer.add_callback(eval_callback)
+    # eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
+    # trainer.add_callback(eval_callback)
 
     trainer.train()
 
