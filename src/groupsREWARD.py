@@ -99,10 +99,10 @@ def tokenize_fct(dataset, tokenizer):
         rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
 
         return {
-            "chosen_input_ids": chosen_tokenized["input_ids"],
-            "chosen_attention_mask": chosen_tokenized["attention_mask"],
-            "rejected_input_ids": rejected_tokenized["input_ids"],
-            "rejected_attention_mask": rejected_tokenized["attention_mask"],
+            "input_ids_chosen": chosen_tokenized["input_ids"],
+            "attention_mask_chosen": chosen_tokenized["attention_mask"],
+            "input_ids_rejected": rejected_tokenized["input_ids"],
+            "attention_mask_rejected": rejected_tokenized["attention_mask"],
             "dID": sample["dID"],
             "row_id": sample["row_id"]
         }
