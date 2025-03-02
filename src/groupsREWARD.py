@@ -87,6 +87,28 @@ def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
         return Dataset.from_list(combined_data)
     return Dataset.from_list([])
 
+def tokenize_fct(dataset, tokenizer):
+    def process_sample(sample):
+        chosen_messages = sample["chosen"]
+        rejected_messages = sample["rejected"]
+
+        chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=False)
+        rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=False)
+        
+        chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True)
+        rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
+
+        return {
+            "chosen_input_ids": chosen_tokenized["input_ids"],
+            "chosen_attention_mask": chosen_tokenized["attention_mask"],
+            "rejected_input_ids": rejected_tokenized["input_ids"],
+            "rejected_attention_mask": rejected_tokenized["attention_mask"],
+            "dID": sample["dID"],
+            "row_id": sample["row_id"]
+        }
+
+    return dataset.map(process_sample)
+
 class CustomEvalCallback(TrainerCallback):
     def __init__(self, trainer, eval_dataset_helpful, eval_dataset_harmless):
         self.trainer = trainer
@@ -144,6 +166,11 @@ def main(args):
 
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     model_dtype = torch.bfloat16 if use_fp16 else torch.bfloat32
+
+    train_data = tokenize_fct(train_data, tokenizer)
+    test_data = tokenize_fct(test_data, tokenizer)
+    test_data_helpful = tokenize_fct(test_data_helpful, tokenizer)
+    test_data_harmless = tokenize_fct(test_data_harmless, tokenizer)
     
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
