@@ -229,15 +229,23 @@ def main(args):
         optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
         report_to=args.report_to,
     )
-    test_data = concatenate_datasets([test_data_helpful, test_data_harmless])
+    empty_dataset = Dataset.from_dict({
+        "chosen": [],
+        "rejected": [],
+        "dID": [],
+        "row_id": [],
+        "input_ids_chosen": [],
+        "attention_mask_chosen": [],
+        "input_ids_rejected": [],
+        "attention_mask_rejected": [],
+    })
     trainer = RewardTrainer(
         model=model,
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=test_data,
-        compute_metrics=None
+        eval_dataset=empty_dataset,
     )
 
     eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
