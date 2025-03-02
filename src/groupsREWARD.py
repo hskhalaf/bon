@@ -227,16 +227,17 @@ def main(args):
         eval_strategy="steps",
         eval_steps=args.logging_steps,
         optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
-        report_to=args.report_to
+        report_to=args.report_to,
     )
-
+    test_data = concatenate_datasets([test_data_helpful, test_data_harmless])
     trainer = RewardTrainer(
         model=model,
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=None,
+        eval_dataset=test_data,
+        compute_metrics=None
     )
 
     eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
