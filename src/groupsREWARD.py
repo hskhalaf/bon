@@ -135,6 +135,8 @@ class CustomEvalCallback(TrainerCallback):
         self.eval_dataset_harmless = test_data_harmless
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        if hasattr(args, "local_rank") and args.local_rank not in (0, -1):
+            return control
         if args.report_to == "wandb":
             wandb.log({
                 "default_test_eval_loss": metrics["eval_loss"],
