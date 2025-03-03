@@ -160,8 +160,8 @@ class ComputeMetricsCallback(TrainerCallback):
         helpful = self.compute_metrics(self.eval_dataset_helpful, model)
         harmless = self.compute_metrics(self.eval_dataset_harmless, model)
         metrics = {
-            "eval/mean_chosen_score": helpful,
-            "eval/mean_rejected_score": harmless,
+            "eval/helpful_accuracy": helpful,
+            "eval/harmless_accuracy": harmless,
         }
         print(metrics)
         wandb.log(metrics)
@@ -320,10 +320,10 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=1000)
-    parser.add_argument("--test_size", type=int, default=200)
+    parser.add_argument("--num_rows", type=int, default=20000)
+    parser.add_argument("--test_size", type=int, default=1000)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
-    parser.add_argument("--weight", type=float, default=0.5)
+    parser.add_argument("--weight", type=float, default=0)
     args = parser.parse_args()
     main(args)
