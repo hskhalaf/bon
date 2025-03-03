@@ -259,7 +259,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="google/gemma-2-2b-it")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=6)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=6)
