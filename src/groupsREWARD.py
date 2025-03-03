@@ -137,6 +137,11 @@ class CustomEvalCallback(TrainerCallback):
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         if hasattr(args, "local_rank") and args.local_rank not in (0, -1):
             return control
+            
+        # Print and log default evaluation metrics
+        print(f"\nDefault evaluation metrics at step {state.global_step}:")
+        print(f"Default test eval loss: {metrics['eval_loss']:.4f}")
+        
         if args.report_to == "wandb":
             wandb.log({
                 "default_test_eval_loss": metrics["eval_loss"],
@@ -144,10 +149,19 @@ class CustomEvalCallback(TrainerCallback):
                 step = state.global_step
                 )
 
+        # Evaluate on helpful dataset
         with disable_evaluate_callback(self.trainer, CustomEvalCallback):
             results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
             results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
 
+        # Print helpful and harmless metrics
+        print(f"\nHelpful evaluation metrics at step {state.global_step}:")
+        print(f"Helpful eval loss: {results_helpful['eval_loss']:.4f}")
+        
+        print(f"\nHarmless evaluation metrics at step {state.global_step}:")
+        print(f"Harmless eval loss: {results_harmless['eval_loss']:.4f}")
+        
+        # Log to wandb
         if args.report_to == "wandb":
             wandb.log({
                 "helpful_eval_loss": results_helpful["eval_loss"],
@@ -155,7 +169,8 @@ class CustomEvalCallback(TrainerCallback):
             },
                 step = state.global_step
             )
-
+        
+        return control
             
 def main(args):
     if torch.cuda.is_available():
@@ -259,10 +274,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=6)
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=6)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=8)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
