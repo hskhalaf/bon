@@ -11,7 +11,7 @@ import pandas as pd
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainerCallback
 from trl import RewardTrainer, RewardConfig
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig
 from datasets import concatenate_datasets
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -109,68 +109,104 @@ def tokenize_fct(dataset, tokenizer):
 
     return dataset.map(process_sample)
 
-from contextlib import contextmanager
-from transformers import TrainerCallback
+# from contextlib import contextmanager
+# from transformers import TrainerCallback
 
-@contextmanager
-def disable_evaluate_callback(trainer, callback_cls):
-    """
-    Temporarily removes any callback of type callback_cls 
-    from trainer.callback_handler.callbacks.
-    """
-    callbacks_backup = trainer.callback_handler.callbacks
-    trainer.callback_handler.callbacks = [
-        cb for cb in callbacks_backup
-        if not isinstance(cb, callback_cls)
-    ]
-    yield
-    trainer.callback_handler.callbacks = callbacks_backup
+# @contextmanager
+# def disable_evaluate_callback(trainer, callback_cls):
+#     """
+#     Temporarily removes any callback of type callback_cls 
+#     from trainer.callback_handler.callbacks.
+#     """
+#     callbacks_backup = trainer.callback_handler.callbacks
+#     trainer.callback_handler.callbacks = [
+#         cb for cb in callbacks_backup
+#         if not isinstance(cb, callback_cls)
+#     ]
+#     yield
+#     trainer.callback_handler.callbacks = callbacks_backup
 
-
-class CustomEvalCallback(TrainerCallback):
-    def __init__(self, trainer, test_data_helpful, test_data_harmless):
+class ComputeMetricsCallback(TrainerCallback):
+    def __init__(self, test_data_helpful, test_data_harmless):
         super().__init__()
-        self.trainer = trainer
         self.eval_dataset_helpful = test_data_helpful
         self.eval_dataset_harmless = test_data_harmless
 
-    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        if hasattr(args, "local_rank") and args.local_rank not in (0, -1):
-            return control
+    def compute_metrics(self, eval_dataset, model):
+        chosen_scores, rejected_scores = [], []
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+        model.to(device)
+        for example in eval_dataset:
+            chosen_ids = torch.tensor(example["input_ids_chosen"]).unsqueeze(0).to(device)
+            rejected_ids = torch.tensor(example["input_ids_rejected"]).unsqueeze(0).to(device)
+            chosen_attention_mask = torch.tensor(example["attention_mask_chosen"]).unsqueeze(0).to(device)
+            rejected_attention_mask = torch.tensor(example["attention_mask_rejected"]).unsqueeze(0).to(device)
+            with torch.no_grad():
+                logits_chosen = model(input_ids=chosen_ids, attention_mask=chosen_attention_mask).logits
+                logits_rejected = model(input_ids=rejected_ids, attention_mask=rejected_attention_mask).logits
+                reward_chosen = logits_chosen[:, 0]
+                reward_rejected = logits_rejected[:, 0]
+            chosen_scores.append(reward_chosen.cpu())
+            rejected_scores.append(reward_rejected.cpu())
+        chosen_scores = torch.cat(chosen_scores).tolist()
+        rejected_scores = torch.cat(rejected_scores).tolist()
+        results = [chosen_scores[i] > rejected_scores[i] for i in range(len(chosen_scores))]
+        return sum(results) / len(results) if results else 0
+
+    def on_evaluate(self, args, state, control, model=None, **kwargs):
+        if model is None:
+            return
+        model.eval()
+        helpful = self.compute_metrics(self.eval_dataset_helpful, model)
+        harmless = self.compute_metrics(self.eval_dataset_harmless, model)
+        metrics = {
+            "eval/mean_chosen_score": helpful,
+            "eval/mean_rejected_score": harmless,
+        }
+        print(metrics)
+        wandb.log(metrics)
+        control.should_log = True
+
+# class CustomEvalCallback(TrainerCallback):
+#     def __init__(self, trainer, test_data_helpful, test_data_harmless):
+#         super().__init__()
+#         self.trainer = trainer
+#         self.eval_dataset_helpful = test_data_helpful
+#         self.eval_dataset_harmless = test_data_harmless
+
+#     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+#         if hasattr(args, "local_rank") and args.local_rank not in (0, -1):
+#             return control
             
-        # Print and log default evaluation metrics
-        print(f"\nDefault evaluation metrics at step {state.global_step}:")
-        print(f"Default test eval loss: {metrics['eval_loss']:.4f}")
+#         print(f"\nDefault evaluation metrics at step {state.global_step}:")
+#         print(f"Default test eval loss: {metrics['eval_loss']:.4f}")
         
-        if args.report_to == "wandb":
-            wandb.log({
-                "default_test_eval_loss": metrics["eval_loss"],
-                },
-                step = state.global_step
-                )
+#         if args.report_to == "wandb":
+#             wandb.log({
+#                 "default_test_eval_loss": metrics["eval_loss"],
+#                 },
+#                 step = state.global_step
+#                 )
 
-        # Evaluate on helpful dataset
-        with disable_evaluate_callback(self.trainer, CustomEvalCallback):
-            results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
-            results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
+#         with disable_evaluate_callback(self.trainer, CustomEvalCallback):
+#             results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
+#             results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
 
-        # Print helpful and harmless metrics
-        print(f"\nHelpful evaluation metrics at step {state.global_step}:")
-        print(f"Helpful eval loss: {results_helpful['eval_loss']:.4f}")
+#         print(f"\nHelpful evaluation metrics at step {state.global_step}:")
+#         print(f"Helpful eval loss: {results_helpful['eval_loss']:.4f}")
         
-        print(f"\nHarmless evaluation metrics at step {state.global_step}:")
-        print(f"Harmless eval loss: {results_harmless['eval_loss']:.4f}")
+#         print(f"\nHarmless evaluation metrics at step {state.global_step}:")
+#         print(f"Harmless eval loss: {results_harmless['eval_loss']:.4f}")
         
-        # Log to wandb
-        if args.report_to == "wandb":
-            wandb.log({
-                "helpful_eval_loss": results_helpful["eval_loss"],
-                "harmless_eval_loss": results_harmless["eval_loss"],
-            },
-                step = state.global_step
-            )
+#         if args.report_to == "wandb":
+#             wandb.log({
+#                 "helpful_eval_loss": results_helpful["eval_loss"],
+#                 "harmless_eval_loss": results_harmless["eval_loss"],
+#             },
+#                 step = state.global_step
+#             )
         
-        return control
+#         return control
             
 def main(args):
     if torch.cuda.is_available():
@@ -247,7 +283,7 @@ def main(args):
         learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=args.logging_steps,
-        optim="adamw_torch",  # Use PyTorch's AdamW to avoid any dtype issues
+        optim="adamw_torch",
         report_to=args.report_to,
     )
     dummy_test = test_data_harmless.select([0])
@@ -261,7 +297,8 @@ def main(args):
         eval_dataset=dummy_test,
     )
 
-    eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
+    # eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
+    eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
     trainer.add_callback(eval_callback)
 
     trainer.train()
