@@ -268,6 +268,6 @@ if __name__ == "__main__":
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
     parser.add_argument("--weight", type=float, default=0.5)
-    parser.add_argument("--seed", type=float, default=42)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     main(args)
