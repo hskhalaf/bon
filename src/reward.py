@@ -238,11 +238,11 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=dummy_test,
+        eval_dataset=test_data,
     )
 
-    eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
-    trainer.add_callback(eval_callback)
+    # eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
+    # trainer.add_callback(eval_callback)
 
     trainer.train()
 
