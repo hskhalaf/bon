@@ -216,11 +216,15 @@ def main(args):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
+    # debugging OOM
+    arg_remove_unused_columns = True
+
     training_args = RewardConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         max_length=args.max_length,
-        remove_unused_columns=False,
+        #remove_unused_columns=False,
+        remove_unused_columns=arg_remove_unused_columns, #debugging OOM
         logging_steps=args.logging_steps,
         num_train_epochs=args.epochs,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
@@ -229,8 +233,10 @@ def main(args):
         eval_steps=args.logging_steps,
         optim="adamw_torch",
         report_to=args.report_to,
+        fp16 = use_fp16 # debugging OOM
     )
     dummy_test = test_data_harmless.select([0])
+
 
     trainer = RewardTrainer(
         model=model,
@@ -244,6 +250,10 @@ def main(args):
     # eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
     # trainer.add_callback(eval_callback)
 
+    # debugging OOM
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    print(torch.cuda.memory_summary())
+
     trainer.train()
 
     if args.report_to == "wandb":
@@ -255,7 +265,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
-    parser.add_argument("--output_dir", type=str, default="./reward_model_group")
+    parser.add_argument("--output_dir", type=str, default="/n/netscratch/calmon_lab/Lab/multiplicity/reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
