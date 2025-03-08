@@ -207,13 +207,13 @@ def main(args):
 
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     
-    device_string = PartialState().process_index
+    # device_string = PartialState().process_index
 
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
         num_labels=1,
         torch_dtype=torch.bfloat16,
-        device_map={'':device_string} ### FOR DDP
+        # device_map={'':device_string} ### FOR DDP
     ).to(device)
     
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -246,7 +246,7 @@ def main(args):
         report_to=args.report_to,
         gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
-        gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
+        # gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
     )
     
     dummy_test = test_data_harmless.select([0])
