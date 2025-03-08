@@ -244,9 +244,10 @@ def main(args):
         eval_steps=args.logging_steps,
         optim="adamw_torch",
         report_to=args.report_to,
-        gradient_checkpointing=True,
+        # gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
         # gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
+        # max_grad_norm=1.0,
     )
     
     dummy_test = test_data_harmless.select([0])
