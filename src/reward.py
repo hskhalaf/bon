@@ -151,6 +151,13 @@ class ComputeMetricsCallback(TrainerCallback):
         control.should_log = True
             
 def main(args):
+
+    base_output_dir = args.output_dir
+    unique_output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
+    os.makedirs(unique_output_dir, exist_ok=True)
+    
+    print(f"Saving outputs to: {unique_output_dir}")
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
         use_fp16 = True
@@ -206,7 +213,7 @@ def main(args):
         args.model_name, 
         num_labels=1,
         torch_dtype=torch.bfloat16,
-        device_map={'':device_string}
+        device_map={'':device_string} ### FOR DDP
     ).to(device)
     
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -224,7 +231,7 @@ def main(args):
     arg_remove_unused_columns = True
 
     training_args = RewardConfig(
-        output_dir=args.output_dir,
+        output_dir=unique_output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         max_length=args.max_length,
         #remove_unused_columns=False,
@@ -239,7 +246,7 @@ def main(args):
         report_to=args.report_to,
         gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
-        gradient_checkpointing_kwargs={'use_reentrant':False},
+        gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
     )
     
     dummy_test = test_data_harmless.select([0])
@@ -266,13 +273,13 @@ def main(args):
     if args.report_to == "wandb":
         wandb.finish()
 
-    trainer.save_model(args.output_dir)
-    print(f"Model saved to {args.output_dir}")
+    trainer.save_model(unique_output_dir)
+    print(f"Model saved to {unique_output_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
-    parser.add_argument("--output_dir", type=str, default="/n/netscratch/calmon_lab/Lab/multiplicity/reward_model_group")
+    parser.add_argument("--output_dir", type=str, default="./reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
