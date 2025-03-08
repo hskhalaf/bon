@@ -14,6 +14,7 @@ from trl import RewardTrainer, RewardConfig
 from peft import LoraConfig
 from datasets import concatenate_datasets
 import numpy as np
+from accelerate import PartialState
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.cuda.empty_cache()
@@ -199,10 +200,13 @@ def main(args):
 
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     
+    device_string = PartialState().process_index
+
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
         num_labels=1,
-        torch_dtype=torch.bfloat16
+        torch_dtype=torch.bfloat16,
+        device_map={'':device_string}
     ).to(device)
     
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -233,8 +237,11 @@ def main(args):
         eval_steps=args.logging_steps,
         optim="adamw_torch",
         report_to=args.report_to,
-        fp16 = use_fp16 # debugging OOM
+        gradient_checkpointing=True,
+        fp16 = use_fp16, # debugging OOM
+        gradient_checkpointing_kwargs={'use_reentrant':False},
     )
+    
     dummy_test = test_data_harmless.select([0])
 
 
@@ -244,11 +251,11 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=test_data,
+        eval_dataset=dummy_test,
     )
 
-    # eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
-    # trainer.add_callback(eval_callback)
+    eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
+    trainer.add_callback(eval_callback)
 
     # debugging OOM
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
