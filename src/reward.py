@@ -87,13 +87,13 @@ def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
         return Dataset.from_list(combined_data)
     return Dataset.from_list([])
 
-def tokenize_fct(dataset, tokenizer):
+def tokenize_fct(dataset, tokenizer, args):
     def process_sample(sample):
         chosen_messages = sample["chosen"]
         rejected_messages = sample["rejected"]
 
-        chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=False)
-        rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=False)
+        chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=True)
+        rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=True)
         
         chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True)
         rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
@@ -110,30 +110,41 @@ def tokenize_fct(dataset, tokenizer):
     return dataset.map(process_sample)
 
 class ComputeMetricsCallback(TrainerCallback):
-    def __init__(self, test_data_helpful, test_data_harmless):
+    def __init__(self, test_data_helpful, test_data_harmless, eval_batch_size=8):
         super().__init__()
         self.eval_dataset_helpful = test_data_helpful
         self.eval_dataset_harmless = test_data_harmless
+        self.eval_batch_size = eval_batch_size
 
     def compute_metrics(self, eval_dataset, model):
-        chosen_scores, rejected_scores = [], []
-        device = torch.device("cuda" if torch.cuda.is_available() else "mps")
-        model.to(device)
-        for example in eval_dataset:
-            chosen_ids = torch.tensor(example["input_ids_chosen"]).unsqueeze(0).to(device)
-            rejected_ids = torch.tensor(example["input_ids_rejected"]).unsqueeze(0).to(device)
-            chosen_attention_mask = torch.tensor(example["attention_mask_chosen"]).unsqueeze(0).to(device)
-            rejected_attention_mask = torch.tensor(example["attention_mask_rejected"]).unsqueeze(0).to(device)
+        device = model.device
+        model.eval()
+        batch_size = self.eval_batch_size
+        total_examples = len(eval_dataset)
+        all_chosen_scores = []
+        all_rejected_scores = []
+        
+        for i in range(0, total_examples, batch_size):
+            batch_indices = range(i, min(i + batch_size, total_examples))
+            
+            chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
+            rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
+            chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
+            rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
+            
             with torch.no_grad():
-                logits_chosen = model(input_ids=chosen_ids, attention_mask=chosen_attention_mask).logits
-                logits_rejected = model(input_ids=rejected_ids, attention_mask=rejected_attention_mask).logits
-                reward_chosen = logits_chosen[:, 0]
-                reward_rejected = logits_rejected[:, 0]
-            chosen_scores.append(reward_chosen.cpu())
-            rejected_scores.append(reward_rejected.cpu())
-        chosen_scores = torch.cat(chosen_scores).tolist()
-        rejected_scores = torch.cat(rejected_scores).tolist()
-        results = [chosen_scores[i] > rejected_scores[i] for i in range(len(chosen_scores))]
+                logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
+                logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
+                rewards_chosen = logits_chosen[:, 0]
+                rewards_rejected = logits_rejected[:, 0]
+                
+            all_chosen_scores.append(rewards_chosen.cpu())
+            all_rejected_scores.append(rewards_rejected.cpu())
+        
+        all_chosen_scores = torch.cat(all_chosen_scores).tolist()
+        all_rejected_scores = torch.cat(all_rejected_scores).tolist()
+        results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
+        
         return sum(results) / len(results) if results else 0
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
@@ -201,9 +212,9 @@ def main(args):
     test_data_helpful = process_default(test_data_helpful)
     test_data_harmless = process_default(test_data_harmless)
 
-    train_data = tokenize_fct(train_data, tokenizer)
-    test_data_helpful = tokenize_fct(test_data_helpful, tokenizer)
-    test_data_harmless = tokenize_fct(test_data_harmless, tokenizer)
+    train_data = tokenize_fct(train_data, tokenizer, args)
+    test_data_helpful = tokenize_fct(test_data_helpful, tokenizer, args)
+    test_data_harmless = tokenize_fct(test_data_harmless, tokenizer, args)
 
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     
@@ -212,7 +223,7 @@ def main(args):
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
         num_labels=1,
-        torch_dtype=torch.bfloat16,
+        torch_dtype=torch.float16 if use_fp16 else torch.float32,
         # device_map={'':device_string} ### FOR DDP
     ).to(device)
     
@@ -244,7 +255,7 @@ def main(args):
         eval_steps=args.logging_steps,
         optim="adamw_torch",
         report_to=args.report_to,
-        # gradient_checkpointing=True,
+        gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
         # gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
         max_grad_norm=1.0,
@@ -262,7 +273,7 @@ def main(args):
         eval_dataset=dummy_test,
     )
 
-    eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless)
+    eval_callback = ComputeMetricsCallback(test_data_helpful, test_data_harmless, args.per_device_eval_batch_size)
     trainer.add_callback(eval_callback)
 
     # debugging OOM
@@ -285,14 +296,14 @@ if __name__ == "__main__":
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--learning_rate", type=float, default=5e-5)
+    parser.add_argument("--learning_rate", type=float, default=2e-4)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=20000)
+    parser.add_argument("--num_rows", type=int, default=30000)
     parser.add_argument("--test_size", type=int, default=1000)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
-    parser.add_argument("--weight", type=float, default=0.5)
+    parser.add_argument("--weight", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     main(args)
