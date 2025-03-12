@@ -91,13 +91,10 @@ def tokenize_fct(dataset, tokenizer, args):
     def process_sample(sample):
         chosen_messages = sample["chosen"]
         rejected_messages = sample["rejected"]
-
         chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=True)
         rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=True)
-        
-        chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True)
-        rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
-
+        chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True, padding='max_length')
+        rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True, padding='max_length')
         return {
             "input_ids_chosen": chosen_tokenized["input_ids"],
             "attention_mask_chosen": chosen_tokenized["attention_mask"],
@@ -106,7 +103,6 @@ def tokenize_fct(dataset, tokenizer, args):
             "dID": sample["dID"],
             "row_id": sample["row_id"]
         }
-
     return dataset.map(process_sample)
 
 class ComputeMetricsCallback(TrainerCallback):
@@ -144,7 +140,7 @@ class ComputeMetricsCallback(TrainerCallback):
         all_chosen_scores = torch.cat(all_chosen_scores).tolist()
         all_rejected_scores = torch.cat(all_rejected_scores).tolist()
         results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
-        
+        torch.cuda.empty_cache()
         return sum(results) / len(results) if results else 0
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
