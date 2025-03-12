@@ -234,8 +234,7 @@ def main(args):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
-    # debugging OOM
-    arg_remove_unused_columns = True
+    arg_remove_unused_columns = False
 
     training_args = RewardConfig(
         output_dir=unique_output_dir,
@@ -251,9 +250,9 @@ def main(args):
         eval_steps=args.logging_steps,
         optim="adamw_torch",
         report_to=args.report_to,
-        gradient_checkpointing=True,
+        # gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
-        gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
+        # gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
         max_grad_norm=1.0,
     )
     
@@ -286,7 +285,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-3B-Instruct")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
@@ -295,8 +294,8 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=2e-4)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=30000)
-    parser.add_argument("--test_size", type=int, default=1000)
+    parser.add_argument("--num_rows", type=int, default=100)
+    parser.add_argument("--test_size", type=int, default=10)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
     parser.add_argument("--weight", type=float, default=1.0)
