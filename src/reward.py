@@ -15,6 +15,7 @@ from peft import LoraConfig
 from datasets import concatenate_datasets
 import numpy as np
 from accelerate import PartialState
+from peft import get_peft_model
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.cuda.empty_cache()
@@ -234,6 +235,11 @@ def main(args):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
+    lora_model = get_peft_model(model, peft_config)
+    for param in lora_model.parameters():
+        if param.requires_grad:
+            param.data = param.data.to(torch.float32)
+
     arg_remove_unused_columns = False
 
     training_args = RewardConfig(
@@ -260,11 +266,11 @@ def main(args):
 
 
     trainer = RewardTrainer(
-        model=model,
+        model=lora_model,
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
-        peft_config=peft_config,
+        # peft_config=peft_config,
         eval_dataset=dummy_test,
     )
 
@@ -285,7 +291,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.1-8B-Instruct")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
     parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
@@ -294,7 +300,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=2e-4)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
-    parser.add_argument("--num_rows", type=int, default=100)
+    parser.add_argument("--num_rows", type=int, default=30000)
     parser.add_argument("--test_size", type=int, default=10)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
