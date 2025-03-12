@@ -11,7 +11,7 @@ import pandas as pd
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, TrainerCallback
 from trl import PPOConfig, PPOTrainer
-from peft import LoraConfig
+from peft import LoraConfig, PeftModel, get_peft_model
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.manual_seed(42)
@@ -37,10 +37,32 @@ def extract_prompt(text):
     last_assistant = text.rfind("Assistant:")
     return text[:last_assistant].strip() if last_assistant != -1 else text.strip()
 
+def process_conversation(text):
+    lines = text.strip().splitlines()
+    messages = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            role, content = line.split(":", 1)
+            if role.strip() == "Human":
+                role = "user"
+            elif role.strip() == "Assistant":
+                role = "assistant"
+            messages.append({"role": role.strip(), "content": content.strip()})
+    if not messages or messages[0]["role"] != "user":
+        return []
+    for i in range(1, len(messages)):
+        expected_role = "assistant" if i % 2 == 1 else "user"
+        if messages[i]["role"] != expected_role:
+            return []
+    return messages
+
 def process_data(dataset):
     data_list = dataset.to_list()
     df = pd.DataFrame({
-        "query": [extract_prompt(entry["chosen"]) for entry in data_list],
+        "query": [process_conversation(extract_prompt(entry["chosen"]) + " Assistant:") for entry in data_list],
     })
     return Dataset.from_pandas(df)
 
@@ -75,6 +97,7 @@ class CustomEvalCallback(TrainerCallback):
             print(f"Evaluating at step {state.global_step}...")
             helpful_rewards = self.evaluate_dataset(self.eval_dataset_helpful, "helpful")
             harmless_rewards = self.evaluate_dataset(self.eval_dataset_harmless, "harmless")
+            torch.cuda.empty_cache()
             if args.report_to == "wandb":
                 wandb.log({
                     "eval/helpful_reward_mean": sum(helpful_rewards) / len(helpful_rewards) if helpful_rewards else 0,
@@ -85,33 +108,49 @@ class CustomEvalCallback(TrainerCallback):
     def evaluate_dataset(self, dataset, name):
         rewards = []
         sample_size = min(50, len(dataset))
-        for idx in random.sample(range(len(dataset)), sample_size):
-            entry = dataset[idx]
-            query_tensor = self.ppo_trainer.tokenizer(entry["query"], return_tensors="pt", padding=True, truncation=True).to(self.ppo_trainer.accelerator.device)
-            response_tensor = self.ppo_trainer.generate(
-                query_tensor.input_ids,
-                max_new_tokens=self.ppo_trainer.config.response_length,
-                do_sample=True,
-                temperature=self.ppo_trainer.config.temperature
-            )
-            response_text = self.ppo_trainer.tokenizer.decode(
-                response_tensor[0][query_tensor.input_ids.shape[1]:],
-                skip_special_tokens=True
-            )
+        batch_size = 8
+        for start_idx in range(0, sample_size, batch_size):
+            end_idx = min(start_idx + batch_size, sample_size)
+            batch_indices = random.sample(range(len(dataset)), end_idx - start_idx)
+            batch_entries = [dataset[idx] for idx in batch_indices]
+            
+            batch_queries = [entry["query"] for entry in batch_entries]
+            batch_query_tensors = self.ppo_trainer.tokenizer(batch_queries, return_tensors="pt", padding=True, truncation=True).to(self.ppo_trainer.accelerator.device)
+            
+            batch_response_tensors = []
+            for query_tensor in batch_query_tensors.input_ids:
+                response_tensor = self.ppo_trainer.generate(
+                    query_tensor.unsqueeze(0),
+                    max_new_tokens=self.ppo_trainer.config.response_length,
+                    do_sample=True,
+                    temperature=self.ppo_trainer.config.temperature
+                )
+                batch_response_tensors.append(response_tensor[0])
+            
+            batch_responses = []
+            for i, response_tensor in enumerate(batch_response_tensors):
+                query_length = batch_query_tensors.input_ids[i].shape[0]
+                response_text = self.ppo_trainer.tokenizer.decode(
+                    response_tensor[query_length:],
+                    skip_special_tokens=True
+                )
+                batch_responses.append(response_text)
+            
+            batch_inputs = [q + r for q, r in zip(batch_queries, batch_responses)]
             with torch.no_grad():
-                reward_input = self.ppo_trainer.tokenizer(
-                    [entry["query"] + response_text],
+                reward_inputs = self.ppo_trainer.tokenizer(
+                    batch_inputs,
                     return_tensors="pt",
                     padding=True,
                     truncation=True
                 ).to(self.ppo_trainer.accelerator.device)
-                reward_score = self.ppo_trainer.reward_model(**reward_input).logits.item()
-                rewards.append(reward_score)
+                reward_scores = self.ppo_trainer.reward_model(**reward_inputs).logits.squeeze(-1).tolist()
+                rewards.extend(reward_scores)
+        
         print(f"{name.capitalize()} mean reward: {sum(rewards) / len(rewards):.4f}" if rewards else f"{name.capitalize()} dataset empty")
         return rewards
 
 def get_rewards_from_model(queries, responses, reward_model, tokenizer, device, max_length=512):
-    # Formula: reward = reward_model(tokenizer(query + response)).logits
     inputs = [q + r for q, r in zip(queries, responses)]
     tokenized = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
     with torch.no_grad():
@@ -127,7 +166,6 @@ def main(args):
     if args.report_to == "wandb":
         wandb.init(project="ppo_training", config=vars(args))
     
-    # Download and load datasets (using helpful and harmless splits)
     base_helpful = "https://huggingface.co/datasets/Anthropic/hh-rlhf/resolve/main/helpful-base/"
     for file in ["train.jsonl.gz", "test.jsonl.gz"]:
         download_and_decompress(base_helpful + file, file.replace(".gz", ""))
@@ -139,6 +177,12 @@ def main(args):
         download_and_decompress(base_harmless + file, file.replace(".gz", ""))
     train_harmless = Dataset.from_list(load_jsonl("train.jsonl"))
     test_harmless = Dataset.from_list(load_jsonl("test.jsonl"))
+    
+    adapter_path = args.reward_model_path
+    config_path = os.path.join(adapter_path, "adapter_config.json")
+    with open(config_path, 'r') as f:
+        adapter_config = json.load(f)
+    base_model_name = adapter_config["base_model_name_or_path"]
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
@@ -152,12 +196,27 @@ def main(args):
     test_data_harmless = process_data(test_data_harmless)
 
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
+    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
     test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
     
-    reward_model = AutoModelForSequenceClassification.from_pretrained(args.reward_model_path).to(device)
+    base_reward_model = AutoModelForSequenceClassification.from_pretrained(base_model_name).to(device)
+    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path).to(device)
     reward_model.eval()
-    model = AutoModelForCausalLM.from_pretrained(args.model_name)
-    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name)
+
+    base_model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    base_ref_model = AutoModelForCausalLM.from_pretrained(args.model_name)
+
+    peft_config = LoraConfig(
+        r=args.lora_rank,
+        lora_alpha=32,
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM"
+    )
+    
+    model = get_peft_model(base_model, peft_config)
+    ref_model = base_ref_model
     
     ppo_config = PPOConfig(
         output_dir=args.output_dir,
@@ -168,6 +227,9 @@ def main(args):
         response_length=args.response_length,
         temperature=args.temperature,
         kl_coef=args.kl_coef,
+        max_grad_norm=1.0,
+        lr_scheduler_type="cosine",
+        warmup_steps=100,
     )
     
     ppo_trainer = PPOTrainer(
@@ -179,12 +241,13 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
     )
-
-    
+        
     ppo_trainer.add_callback(CustomEvalCallback(ppo_trainer, test_data_helpful, test_data_harmless))    
     ppo_trainer.train()
-    ppo_trainer.save_pretrained(args.output_dir)
-    print(f"Model saved to {args.output_dir}")
+
+    model.save_pretrained(args.output_dir)
+    print(f"LoRA adapters saved to {args.output_dir}")
+    
     if args.report_to == "wandb":
         wandb.finish()
 
@@ -194,21 +257,18 @@ if __name__ == "__main__":
     parser.add_argument("--reward_model_path", type=str, default="Qwen/Qwen2.5-0.5B")
     parser.add_argument("--output_dir", type=str, default="./ppo_model")
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--mini_batch_size", type=int, default=4)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
     parser.add_argument("--ppo_epochs", type=int, default=4)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=512)
     parser.add_argument("--response_length", type=int, default=128)
     parser.add_argument("--kl_coef", type=float, default=0.05)
     parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--use_lora", action="store_true")
     parser.add_argument("--lora_rank", type=int, default=16)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")
-    # Data sampling parameters (essential for dataset preparation)
     parser.add_argument("--num_rows", type=int, default=1000)
     parser.add_argument("--test_size", type=int, default=100)
-    parser.add_argument("--weight", type=float, default=0.8)
-    parser.add_argument("--logging_steps", type=int, default=10)
+    parser.add_argument("--weight", type=float, default=0.5)
+    parser.add_argument("--logging_steps", type=int, default=20)
     args = parser.parse_args()
     main(args)
