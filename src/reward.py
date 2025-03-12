@@ -253,7 +253,7 @@ def main(args):
         report_to=args.report_to,
         gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
-        # gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
+        gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
         max_grad_norm=1.0,
     )
     
