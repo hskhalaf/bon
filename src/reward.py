@@ -264,7 +264,8 @@ def main(args):
         args.model_name, 
         num_labels=1,
         torch_dtype=torch.float16 if use_fp16 else torch.float32,
-        device_map={"":accelerator.local_process_index}
+        # device_map={"":accelerator.local_process_index}
+        device_map="auto"
     )
     
     model.config.pad_token_id = tokenizer.pad_token_id
@@ -324,7 +325,7 @@ def main(args):
 
     trainer.save_model(unique_output_dir)
     print(f"Model saved to {unique_output_dir}")
-
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
@@ -333,7 +334,7 @@ if __name__ == "__main__":
     parser.add_argument("--per_device_eval_batch_size", type=int, default=12)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--learning_rate", type=float, default=2e-4)
+    parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
     parser.add_argument("--num_rows", type=int, default=30000)
