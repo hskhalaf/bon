@@ -93,8 +93,8 @@ def tokenize_fct(dataset, tokenizer, args):
         rejected_messages = sample["rejected"]
         chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=True)
         rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=True)
-        chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True, padding='max_length')
-        rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True, padding='max_length')
+        chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True)
+        rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
         return {
             "input_ids_chosen": chosen_tokenized["input_ids"],
             "attention_mask_chosen": chosen_tokenized["attention_mask"],
@@ -284,7 +284,7 @@ def main(args):
         output_dir=unique_output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         max_length=args.max_length,
-        remove_unused_columns=arg_remove_unused_columns, #debugging OOM
+        remove_unused_columns=arg_remove_unused_columns,
         logging_steps=args.logging_steps,
         num_train_epochs=args.epochs,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
