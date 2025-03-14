@@ -87,76 +87,36 @@ def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
         return Dataset.from_list(combined_data)
     return Dataset.from_list([])
 
-def tokenize_fct(dataset, tokenizer, args):
-    def process_sample(sample):
-        chosen_messages = sample["chosen"]
-        rejected_messages = sample["rejected"]
-        chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=True)
-        rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=True)
-        chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True)
-        rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
-        return {
-            "input_ids_chosen": chosen_tokenized["input_ids"],
-            "attention_mask_chosen": chosen_tokenized["attention_mask"],
-            "input_ids_rejected": rejected_tokenized["input_ids"],
-            "attention_mask_rejected": rejected_tokenized["attention_mask"],
-            "dID": sample["dID"],
-            "row_id": sample["row_id"]
-        }
-    return dataset.map(process_sample)
-
-# class ComputeMetricsCallback(TrainerCallback):
-#     def __init__(self, test_data_helpful, test_data_harmless, eval_batch_size=8):
-#         super().__init__()
-#         self.eval_dataset_helpful = test_data_helpful
-#         self.eval_dataset_harmless = test_data_harmless
-#         self.eval_batch_size = eval_batch_size
-
-#     def compute_metrics(self, eval_dataset, model):
-#         device = model.device
-#         model.eval()
-#         batch_size = self.eval_batch_size
-#         total_examples = len(eval_dataset)
-#         all_chosen_scores = []
-#         all_rejected_scores = []
-        
-#         for i in range(0, total_examples, batch_size):
-#             batch_indices = range(i, min(i + batch_size, total_examples))
-            
-#             chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
-#             rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
-#             chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
-#             rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
-            
-#             with torch.no_grad():
-#                 logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
-#                 logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
-#                 rewards_chosen = logits_chosen[:, 0]
-#                 rewards_rejected = logits_rejected[:, 0]
-                
-#             all_chosen_scores.append(rewards_chosen.cpu())
-#             all_rejected_scores.append(rewards_rejected.cpu())
-        
-#         all_chosen_scores = torch.cat(all_chosen_scores).tolist()
-#         all_rejected_scores = torch.cat(all_rejected_scores).tolist()
-#         results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
-#         torch.cuda.empty_cache()
-#         return sum(results) / len(results) if results else 0
-
-#     def on_evaluate(self, args, state, control, model=None, **kwargs):
-#         if model is None:
-#             return
-#         model.eval()
-#         helpful = self.compute_metrics(self.eval_dataset_helpful, model)
-#         harmless = self.compute_metrics(self.eval_dataset_harmless, model)
-#         metrics = {
-#             "eval/helpful_accuracy": helpful,
-#             "eval/harmless_accuracy": harmless,
+# def tokenize_fct(dataset, tokenizer, args):
+#     def process_sample(sample):
+#         chosen_messages = sample["chosen"]
+#         rejected_messages = sample["rejected"]
+#         chosen_text = tokenizer.apply_chat_template(chosen_messages, tokenize=False, add_generation_prompt=True)
+#         rejected_text = tokenizer.apply_chat_template(rejected_messages, tokenize=False, add_generation_prompt=True)
+#         chosen_tokenized = tokenizer(chosen_text, max_length=args.max_length, truncation=True)
+#         rejected_tokenized = tokenizer(rejected_text, max_length=args.max_length, truncation=True)
+#         return {
+#             "input_ids_chosen": chosen_tokenized["input_ids"],
+#             "attention_mask_chosen": chosen_tokenized["attention_mask"],
+#             "input_ids_rejected": rejected_tokenized["input_ids"],
+#             "attention_mask_rejected": rejected_tokenized["attention_mask"],
+#             "dID": sample["dID"],
+#             "row_id": sample["row_id"]
 #         }
-#         print(metrics)
-#         wandb.log(metrics)
-#         control.should_log = True
-            
+#     return dataset.map(process_sample)
+
+def process_batch(batch, tokenizer, args):
+    chosen_texts = [tokenizer.apply_chat_template(x, tokenize=False, add_generation_prompt=True) for x in batch["chosen"]]
+    rejected_texts = [tokenizer.apply_chat_template(x, tokenize=False, add_generation_prompt=True) for x in batch["rejected"]]
+    chosen_encodings = tokenizer(chosen_texts, max_length=args.max_length, truncation=True, padding="max_length")
+    rejected_encodings = tokenizer(rejected_texts, max_length=args.max_length, truncation=True, padding="max_length")
+    batch["input_ids_chosen"] = chosen_encodings["input_ids"]
+    batch["attention_mask_chosen"] = chosen_encodings["attention_mask"]
+    batch["input_ids_rejected"] = rejected_encodings["input_ids"]
+    batch["attention_mask_rejected"] = rejected_encodings["attention_mask"]
+    return batch
+
+
 class ComputeMetricsCallback(TrainerCallback):
     def __init__(self, test_data_helpful, test_data_harmless, eval_batch_size=8):
         super().__init__()
@@ -165,24 +125,34 @@ class ComputeMetricsCallback(TrainerCallback):
         self.eval_batch_size = eval_batch_size
 
     def compute_metrics(self, eval_dataset, model):
-        chosen_scores, rejected_scores = [], []
-        device = torch.device("cuda" if torch.cuda.is_available() else "mps")
-        model.to(device)
-        for example in eval_dataset:
-            chosen_ids = torch.tensor(example["input_ids_chosen"]).unsqueeze(0).to(device)
-            rejected_ids = torch.tensor(example["input_ids_rejected"]).unsqueeze(0).to(device)
-            chosen_attention_mask = torch.tensor(example["attention_mask_chosen"]).unsqueeze(0).to(device)
-            rejected_attention_mask = torch.tensor(example["attention_mask_rejected"]).unsqueeze(0).to(device)
+        device = model.device
+        model.eval()
+        batch_size = self.eval_batch_size
+        total_examples = len(eval_dataset)
+        all_chosen_scores = []
+        all_rejected_scores = []
+        
+        for i in range(0, total_examples, batch_size):
+            batch_indices = range(i, min(i + batch_size, total_examples))
+            
+            chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
+            rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
+            chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
+            rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
+            
             with torch.no_grad():
-                logits_chosen = model(input_ids=chosen_ids, attention_mask=chosen_attention_mask).logits
-                logits_rejected = model(input_ids=rejected_ids, attention_mask=rejected_attention_mask).logits
-                reward_chosen = logits_chosen[:, 0]
-                reward_rejected = logits_rejected[:, 0]
-            chosen_scores.append(reward_chosen.cpu())
-            rejected_scores.append(reward_rejected.cpu())
-        chosen_scores = torch.cat(chosen_scores).tolist()
-        rejected_scores = torch.cat(rejected_scores).tolist()
-        results = [chosen_scores[i] > rejected_scores[i] for i in range(len(chosen_scores))]
+                logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
+                logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
+                rewards_chosen = logits_chosen[:, 0]
+                rewards_rejected = logits_rejected[:, 0]
+                
+            all_chosen_scores.append(rewards_chosen.cpu())
+            all_rejected_scores.append(rewards_rejected.cpu())
+        
+        all_chosen_scores = torch.cat(all_chosen_scores).tolist()
+        all_rejected_scores = torch.cat(all_rejected_scores).tolist()
+        results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
+        torch.cuda.empty_cache()
         return sum(results) / len(results) if results else 0
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
@@ -198,6 +168,48 @@ class ComputeMetricsCallback(TrainerCallback):
         print(metrics)
         wandb.log(metrics)
         control.should_log = True
+            
+# class ComputeMetricsCallback(TrainerCallback):
+#     def __init__(self, test_data_helpful, test_data_harmless, eval_batch_size=8):
+#         super().__init__()
+#         self.eval_dataset_helpful = test_data_helpful
+#         self.eval_dataset_harmless = test_data_harmless
+#         self.eval_batch_size = eval_batch_size
+
+#     def compute_metrics(self, eval_dataset, model):
+#         chosen_scores, rejected_scores = [], []
+#         device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+#         model.to(device)
+#         for example in eval_dataset:
+#             chosen_ids = torch.tensor(example["input_ids_chosen"]).unsqueeze(0).to(device)
+#             rejected_ids = torch.tensor(example["input_ids_rejected"]).unsqueeze(0).to(device)
+#             chosen_attention_mask = torch.tensor(example["attention_mask_chosen"]).unsqueeze(0).to(device)
+#             rejected_attention_mask = torch.tensor(example["attention_mask_rejected"]).unsqueeze(0).to(device)
+#             with torch.no_grad():
+#                 logits_chosen = model(input_ids=chosen_ids, attention_mask=chosen_attention_mask).logits
+#                 logits_rejected = model(input_ids=rejected_ids, attention_mask=rejected_attention_mask).logits
+#                 reward_chosen = logits_chosen[:, 0]
+#                 reward_rejected = logits_rejected[:, 0]
+#             chosen_scores.append(reward_chosen.cpu())
+#             rejected_scores.append(reward_rejected.cpu())
+#         chosen_scores = torch.cat(chosen_scores).tolist()
+#         rejected_scores = torch.cat(rejected_scores).tolist()
+#         results = [chosen_scores[i] > rejected_scores[i] for i in range(len(chosen_scores))]
+#         return sum(results) / len(results) if results else 0
+
+#     def on_evaluate(self, args, state, control, model=None, **kwargs):
+#         if model is None:
+#             return
+#         model.eval()
+#         helpful = self.compute_metrics(self.eval_dataset_helpful, model)
+#         harmless = self.compute_metrics(self.eval_dataset_harmless, model)
+#         metrics = {
+#             "eval/helpful_accuracy": helpful,
+#             "eval/harmless_accuracy": harmless,
+#         }
+#         print(metrics)
+#         wandb.log(metrics)
+#         control.should_log = True
 
 def main(args):
     print("using", torch.cuda.device_count(), "GPUs!")
@@ -252,9 +264,13 @@ def main(args):
     test_data_helpful = process_default(test_data_helpful)
     test_data_harmless = process_default(test_data_harmless)
 
-    train_data = tokenize_fct(train_data, tokenizer, args)
-    test_data_helpful = tokenize_fct(test_data_helpful, tokenizer, args)
-    test_data_harmless = tokenize_fct(test_data_harmless, tokenizer, args)
+    # train_data = tokenize_fct(train_data, tokenizer, args)
+    # test_data_helpful = tokenize_fct(test_data_helpful, tokenizer, args)
+    # test_data_harmless = tokenize_fct(test_data_harmless, tokenizer, args)
+
+    train_data = train_data.map(process_batch, batched=True, fn_kwargs={"tokenizer": tokenizer, "args": args})
+    test_data_helpful = test_data_helpful.map(process_batch, batched=True, fn_kwargs={"tokenizer": tokenizer, "args": args})
+    test_data_harmless = test_data_harmless.map(process_batch, batched=True, fn_kwargs={"tokenizer": tokenizer, "args": args})
 
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     
@@ -265,8 +281,8 @@ def main(args):
         args.model_name, 
         num_labels=1,
         torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
-        # device_map={"":accelerator.local_process_index}
-        device_map="auto"
+        device_map={"":accelerator.local_process_index},
+        # device_map="auto"
     )
     
     model.config.pad_token_id = tokenizer.pad_token_id
