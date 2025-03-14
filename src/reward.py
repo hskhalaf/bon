@@ -14,8 +14,7 @@ from trl import RewardTrainer, RewardConfig
 from peft import LoraConfig
 from datasets import concatenate_datasets
 import numpy as np
-from accelerate import PartialState
-from peft import get_peft_model
+from accelerate import Accelerator
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.cuda.empty_cache()
@@ -106,6 +105,58 @@ def tokenize_fct(dataset, tokenizer, args):
         }
     return dataset.map(process_sample)
 
+# class ComputeMetricsCallback(TrainerCallback):
+#     def __init__(self, test_data_helpful, test_data_harmless, eval_batch_size=8):
+#         super().__init__()
+#         self.eval_dataset_helpful = test_data_helpful
+#         self.eval_dataset_harmless = test_data_harmless
+#         self.eval_batch_size = eval_batch_size
+
+#     def compute_metrics(self, eval_dataset, model):
+#         device = model.device
+#         model.eval()
+#         batch_size = self.eval_batch_size
+#         total_examples = len(eval_dataset)
+#         all_chosen_scores = []
+#         all_rejected_scores = []
+        
+#         for i in range(0, total_examples, batch_size):
+#             batch_indices = range(i, min(i + batch_size, total_examples))
+            
+#             chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
+#             rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
+#             chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
+#             rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
+            
+#             with torch.no_grad():
+#                 logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
+#                 logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
+#                 rewards_chosen = logits_chosen[:, 0]
+#                 rewards_rejected = logits_rejected[:, 0]
+                
+#             all_chosen_scores.append(rewards_chosen.cpu())
+#             all_rejected_scores.append(rewards_rejected.cpu())
+        
+#         all_chosen_scores = torch.cat(all_chosen_scores).tolist()
+#         all_rejected_scores = torch.cat(all_rejected_scores).tolist()
+#         results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
+#         torch.cuda.empty_cache()
+#         return sum(results) / len(results) if results else 0
+
+#     def on_evaluate(self, args, state, control, model=None, **kwargs):
+#         if model is None:
+#             return
+#         model.eval()
+#         helpful = self.compute_metrics(self.eval_dataset_helpful, model)
+#         harmless = self.compute_metrics(self.eval_dataset_harmless, model)
+#         metrics = {
+#             "eval/helpful_accuracy": helpful,
+#             "eval/harmless_accuracy": harmless,
+#         }
+#         print(metrics)
+#         wandb.log(metrics)
+#         control.should_log = True
+            
 class ComputeMetricsCallback(TrainerCallback):
     def __init__(self, test_data_helpful, test_data_harmless, eval_batch_size=8):
         super().__init__()
@@ -114,34 +165,24 @@ class ComputeMetricsCallback(TrainerCallback):
         self.eval_batch_size = eval_batch_size
 
     def compute_metrics(self, eval_dataset, model):
-        device = model.device
-        model.eval()
-        batch_size = self.eval_batch_size
-        total_examples = len(eval_dataset)
-        all_chosen_scores = []
-        all_rejected_scores = []
-        
-        for i in range(0, total_examples, batch_size):
-            batch_indices = range(i, min(i + batch_size, total_examples))
-            
-            chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
-            rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
-            chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
-            rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
-            
+        chosen_scores, rejected_scores = [], []
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+        model.to(device)
+        for example in eval_dataset:
+            chosen_ids = torch.tensor(example["input_ids_chosen"]).unsqueeze(0).to(device)
+            rejected_ids = torch.tensor(example["input_ids_rejected"]).unsqueeze(0).to(device)
+            chosen_attention_mask = torch.tensor(example["attention_mask_chosen"]).unsqueeze(0).to(device)
+            rejected_attention_mask = torch.tensor(example["attention_mask_rejected"]).unsqueeze(0).to(device)
             with torch.no_grad():
-                logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
-                logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
-                rewards_chosen = logits_chosen[:, 0]
-                rewards_rejected = logits_rejected[:, 0]
-                
-            all_chosen_scores.append(rewards_chosen.cpu())
-            all_rejected_scores.append(rewards_rejected.cpu())
-        
-        all_chosen_scores = torch.cat(all_chosen_scores).tolist()
-        all_rejected_scores = torch.cat(all_rejected_scores).tolist()
-        results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
-        torch.cuda.empty_cache()
+                logits_chosen = model(input_ids=chosen_ids, attention_mask=chosen_attention_mask).logits
+                logits_rejected = model(input_ids=rejected_ids, attention_mask=rejected_attention_mask).logits
+                reward_chosen = logits_chosen[:, 0]
+                reward_rejected = logits_rejected[:, 0]
+            chosen_scores.append(reward_chosen.cpu())
+            rejected_scores.append(reward_rejected.cpu())
+        chosen_scores = torch.cat(chosen_scores).tolist()
+        rejected_scores = torch.cat(rejected_scores).tolist()
+        results = [chosen_scores[i] > rejected_scores[i] for i in range(len(chosen_scores))]
         return sum(results) / len(results) if results else 0
 
     def on_evaluate(self, args, state, control, model=None, **kwargs):
@@ -157,8 +198,9 @@ class ComputeMetricsCallback(TrainerCallback):
         print(metrics)
         wandb.log(metrics)
         control.should_log = True
-            
+
 def main(args):
+    print("using", torch.cuda.device_count(), "GPUs!")
 
     base_output_dir = args.output_dir
     unique_output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
@@ -216,13 +258,14 @@ def main(args):
     test_data = concatenate_datasets([test_data_harmless, test_data_helpful])
     
     # device_string = PartialState().process_index
-
+    # Initialize the accelerator once at the start
+    accelerator = Accelerator()
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
         num_labels=1,
         torch_dtype=torch.float16 if use_fp16 else torch.float32,
-        # device_map={'':device_string} ### FOR DDP
-    ).to(device)
+        device_map={"":accelerator.local_process_index}
+    )
     
     model.config.pad_token_id = tokenizer.pad_token_id
     
@@ -235,18 +278,12 @@ def main(args):
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     )
 
-    lora_model = get_peft_model(model, peft_config)
-    for param in lora_model.parameters():
-        if param.requires_grad:
-            param.data = param.data.to(torch.float32)
-
     arg_remove_unused_columns = False
 
     training_args = RewardConfig(
         output_dir=unique_output_dir,
         per_device_train_batch_size=args.per_device_train_batch_size,
         max_length=args.max_length,
-        #remove_unused_columns=False,
         remove_unused_columns=arg_remove_unused_columns, #debugging OOM
         logging_steps=args.logging_steps,
         num_train_epochs=args.epochs,
@@ -264,13 +301,12 @@ def main(args):
     
     dummy_test = test_data_harmless.select([0])
 
-
     trainer = RewardTrainer(
-        model=lora_model,
+        model=model,
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
-        # peft_config=peft_config,
+        peft_config=peft_config,
         eval_dataset=dummy_test,
     )
 
@@ -291,17 +327,17 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.1-8B-Instruct")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--output_dir", type=str, default="./reward_model_group")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=8)
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=8)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=12)
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=12)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--learning_rate", type=float, default=2e-4)
     parser.add_argument("--max_length", type=int, default=1024)
     parser.add_argument("--lora_rank", type=int, default=8) 
     parser.add_argument("--num_rows", type=int, default=30000)
-    parser.add_argument("--test_size", type=int, default=10)
+    parser.add_argument("--test_size", type=int, default=2000)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
     parser.add_argument("--weight", type=float, default=1.0)
