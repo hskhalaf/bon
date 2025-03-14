@@ -210,7 +210,8 @@ def main(args):
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        use_fp16 = True
+        use_fp16 = False
+        use_bf16 = True
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
         use_fp16 = False
@@ -263,7 +264,7 @@ def main(args):
     model = AutoModelForSequenceClassification.from_pretrained(
         args.model_name, 
         num_labels=1,
-        torch_dtype=torch.float16 if use_fp16 else torch.float32,
+        torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
         # device_map={"":accelerator.local_process_index}
         device_map="auto"
     )
@@ -296,6 +297,7 @@ def main(args):
         report_to=args.report_to,
         # gradient_checkpointing=True,
         fp16 = use_fp16, # debugging OOM
+        bf16=  use_bf16,
         # gradient_checkpointing_kwargs={'use_reentrant':False}, ### FOR DDP
         max_grad_norm=1.0,
     )
@@ -325,7 +327,7 @@ def main(args):
 
     trainer.save_model(unique_output_dir)
     print(f"Model saved to {unique_output_dir}")
-    
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
