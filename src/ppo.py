@@ -242,6 +242,8 @@ def main(args):
     )
     
     model = get_peft_model(base_model, peft_config)
+    model.generation_config = base_model.generation_config
+
     ref_model = base_ref_model
     
     ppo_config = PPOConfig(
