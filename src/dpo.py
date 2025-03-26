@@ -261,7 +261,7 @@ def main(args):
     trainer = CustomDPOTrainer(
         model=model,
         args=training_args,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
         eval_dataset=dummy_test,
