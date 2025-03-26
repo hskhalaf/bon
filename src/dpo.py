@@ -57,20 +57,17 @@ def process_default(dataset):
 
 def tokenize_fn(batch, tokenizer, max_length):
     formatted_prompts = [tokenizer.apply_chat_template([{"role": "user", "content": p}], tokenize=False) for p in batch["prompt"]]
-    formatted_prompts = [p for p in batch["prompt"]]
     formatted_chosen = [
         tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]}, 
             {"role": "assistant", "content": batch["chosen"][i]}
         ], tokenize=False) 
-        for i in range(len(batch["prompt"]))
+        for i in range(len(batch["chosen"]))
     ]
     formatted_rejected = [
         tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]}, 
             {"role": "assistant", "content": batch["rejected"][i]}
         ], tokenize=False) 
-        for i in range(len(batch["prompt"]))
+        for i in range(len(batch["rejected"]))
     ]
     
     prompt = tokenizer(formatted_prompts, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
@@ -82,6 +79,34 @@ def tokenize_fn(batch, tokenizer, max_length):
         "dID": batch["dID"],
         "prompt_input_ids": prompt["input_ids"],
         "prompt_attention_mask": prompt["attention_mask"],
+        "chosen_input_ids": chosen["input_ids"],
+        "chosen_attention_mask": chosen["attention_mask"],
+        "rejected_input_ids": rejected["input_ids"],
+        "rejected_attention_mask": rejected["attention_mask"],
+    }
+
+def tokenize_eval_fn(batch, tokenizer, max_length):
+    formatted_chosen = [
+        tokenizer.apply_chat_template([
+            {"role": "user", "content": batch["prompt"][i]},
+            {"role": "assistant", "content": batch["chosen"][i]}
+        ], tokenize=False) 
+        for i in range(len(batch["chosen"]))
+    ]
+    formatted_rejected = [
+        tokenizer.apply_chat_template([
+            {"role": "user", "content": batch["prompt"][i]},
+            {"role": "assistant", "content": batch["rejected"][i]}
+        ], tokenize=False) 
+        for i in range(len(batch["rejected"]))
+    ]
+    
+    chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+    rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+
+    return {
+        "row_id": batch["row_id"],
+        "dID": batch["dID"],
         "chosen_input_ids": chosen["input_ids"],
         "chosen_attention_mask": chosen["attention_mask"],
         "rejected_input_ids": rejected["input_ids"],
@@ -106,20 +131,6 @@ def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
         return Dataset.from_list(combined_data)
     return Dataset.from_list([])
 
-class CustomEvalCallback(TrainerCallback):
-    def __init__(self, trainer, eval_dataset_helpful, eval_dataset_harmless):
-        self.trainer = trainer
-        self.eval_dataset_helpful = eval_dataset_helpful
-        self.eval_dataset_harmless = eval_dataset_harmless
-    
-    def on_evaluate(self, args, state, control, **kwargs):
-        results_helpful = self.trainer.evaluate(eval_dataset=self.eval_dataset_helpful)
-        results_harmless = self.trainer.evaluate(eval_dataset=self.eval_dataset_harmless)
-        
-        if args.report_to == "wandb":
-            wandb.log({"helpfulness_eval_loss": results_helpful["eval_loss"],
-                       "harmlessness_eval_loss": results_harmless["eval_loss"]})
-
 def compute_custom_metric(eval_dataset, model, batch_size):
     device = model.device
     model.eval()
@@ -128,10 +139,10 @@ def compute_custom_metric(eval_dataset, model, batch_size):
     all_rejected_scores = []
     for i in range(0, total_examples, batch_size):
         batch_indices = range(i, min(i + batch_size, total_examples))
-        chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
-        rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
-        chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
-        rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
+        chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["chosen_input_ids"]) for j in batch_indices]).to(device)
+        rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["rejected_input_ids"]) for j in batch_indices]).to(device)
+        chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["chosen_attention_mask"]) for j in batch_indices]).to(device)
+        rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["rejected_attention_mask"]) for j in batch_indices]).to(device)
         with torch.no_grad():
             logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
             logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
@@ -210,9 +221,8 @@ def main(args):
     test_data_harmless = process_default(test_data_harmless)
 
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
-    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
-    test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
-    test_data = concatenate_datasets([test_data_helpful, test_data_harmless])
+    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), batched=True)
+    test_data_harmless = test_data_harmless.map(lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), batched=True)
 
     accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
