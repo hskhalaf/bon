@@ -14,6 +14,7 @@ from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 from peft import LoraConfig, PeftModel, get_peft_model
 import numpy as np
 from accelerate import Accelerator
+from trl import create_reference_model
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 torch.cuda.empty_cache()
 
@@ -229,9 +230,9 @@ def main(args):
     reward_model.config.pad_token_id = tokenizer.pad_token_id
 
     base_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name)
-    base_ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name)
+    ref_model = create_reference_model(base_model)
     base_model.config.pad_token_id = tokenizer.pad_token_id
-    base_ref_model.config.pad_token_id = tokenizer.pad_token_id
+    ref_model.config.pad_token_id = tokenizer.pad_token_id
     peft_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=32,
@@ -243,8 +244,6 @@ def main(args):
     
     model = get_peft_model(base_model, peft_config)
     model.generation_config = base_model.generation_config
-
-    ref_model = base_ref_model
     
     ppo_config = PPOConfig(
         output_dir=args.output_dir,
