@@ -264,8 +264,10 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=dummy_test,
+        eval_dataset_helpful=test_data_helpful,
+        eval_dataset_harmless=test_data_harmless,
     )
+
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
     print(torch.cuda.memory_summary())
     trainer.train()
