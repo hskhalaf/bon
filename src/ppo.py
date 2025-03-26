@@ -61,16 +61,22 @@ def process_conversation(text):
     return messages
 
 def process_data(dataset):
-    df = pd.DataFrame({
-    "query": [q for entry in dataset.to_list() if (q := process_conversation(extract_prompt(entry["chosen"]) + " Assistant:"))]
-    })
-    return Dataset.from_pandas(df)
+    processed = []
+    for entry in dataset:
+        conversation = process_conversation(extract_prompt(entry["chosen"]) + " Assistant:")
+        if conversation:
+            processed.append({
+                "query": conversation,
+                "input_ids": None,
+                "attention_mask": None
+            })
+    return Dataset.from_list(processed)
 
 def tokenize_fn(batch, tokenizer, max_length):
     prompts = [tokenizer.apply_chat_template(x, tokenize=False, add_generation_prompt=True) for x in batch["query"]]
-    prompts = tokenizer(prompts, truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-    batch["input_ids"] = prompts["input_ids"]
-    batch["attention_mask"] = prompts["attention_mask"]
+    tokenized = tokenizer(prompts, truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+    batch["input_ids"] = tokenized["input_ids"]
+    batch["attention_mask"] = tokenized["attention_mask"]
     return batch
 
 def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
@@ -80,7 +86,7 @@ def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
         sampled_helpful = data_helpful.select(random.sample(range(len(data_helpful)), n_helpful))
         sampled_harmless = data_harmless.select(random.sample(range(len(data_harmless)), n_harmless))
         combined_data = [{"dID": 0, **entry} for entry in sampled_helpful.to_list()] + \
-                        [{"dID": 1, **entry} for entry in sampled_harmless.to_list()]
+                       [{"dID": 1, **entry} for entry in sampled_harmless.to_list()]
         random.shuffle(combined_data)
         return Dataset.from_list(combined_data)
     return Dataset.from_list([])
@@ -93,7 +99,6 @@ class CustomEvalCallback(TrainerCallback):
     
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step % args.logging_steps == 0:
-            print(f"Evaluating at step {state.global_step}...")
             helpful_rewards = self.evaluate_dataset(self.eval_dataset_helpful, "helpful")
             harmless_rewards = self.evaluate_dataset(self.eval_dataset_harmless, "harmless")
             torch.cuda.empty_cache()
@@ -158,30 +163,28 @@ def get_rewards_from_model(queries, responses, reward_model, tokenizer, device, 
     return rewards
 
 def collator(data):
-    return {key: [d[key] for d in data] for key in data[0]}
+    return {key: torch.stack([torch.tensor(d[key]) for d in data]) for key in data[0].keys()}
 
 def main(args):
-    print("using", torch.cuda.device_count(), "GPUs!")
     base_output_dir = args.output_dir
     output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
     os.makedirs(output_dir, exist_ok=True)
-    print(f"Saving outputs to: {output_dir}")
+    
     if torch.cuda.is_available():
         device = torch.device("cuda")
         use_fp16 = False
         use_bf16 = True
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = torch.device("mps")
-        use_fp16 = False
     else:
         device = torch.device("cpu")
         use_fp16 = False
-    print(f"Using device: {device}, FP16: {use_fp16}")
+        use_bf16 = False
+    
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
+    
     if args.report_to == "wandb":
         wandb.init(project="ppo_training", config=args.__dict__)
     
@@ -210,23 +213,24 @@ def main(args):
     train_data = sample_and_shuffle(train_helpful, train_harmless, args.num_rows, args.weight)
     test_data_helpful = sample_and_shuffle(test_helpful, Dataset.from_list([]), args.test_size, 1)
     test_data_harmless = sample_and_shuffle(Dataset.from_list([]), test_harmless, args.test_size, 0)
+    
     train_data = process_data(train_data)
     test_data_helpful = process_data(test_data_helpful)
     test_data_harmless = process_data(test_data_harmless)
 
-    train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
-    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
-    test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
+    train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
+    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
+    test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     
     accelerator = Accelerator()
     base_reward_model = AutoModelForSequenceClassification.from_pretrained(
         reward_model_name, 
-        num_labels = 1,  
+        num_labels=1,
         torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
         device_map={"": accelerator.local_process_index},
     )
     
-    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
+    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index})
     reward_model.eval()
     reward_model.config.pad_token_id = tokenizer.pad_token_id
 
@@ -235,8 +239,8 @@ def main(args):
         torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, 
         device_map={"": accelerator.local_process_index},
     )
-
     base_model.config.pad_token_id = tokenizer.pad_token_id
+    
     peft_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=32,
@@ -246,6 +250,7 @@ def main(args):
         task_type="CAUSAL_LM"
     )
     model = get_peft_model(base_model, peft_config)
+    ref_model = create_reference_model(model)
     
     ppo_config = PPOConfig(
         output_dir=args.output_dir,
@@ -261,31 +266,31 @@ def main(args):
         warmup_steps=100,
         save_steps=300,
         save_total_limit=5,
-        seed = args.seed,
-        data_seed = args.seed,
+        seed=args.seed,
+        data_seed=args.seed,
         report_to=args.report_to,
         fp16=use_fp16,
         bf16=use_bf16,
     )
+    
     dummy_test = test_data_harmless.select([0])
     ppo_trainer = PPOTrainer(
         args=ppo_config,
-        model=model,           
-        ref_model=None,  
-        value_model=reward_model,    
-        reward_model=reward_model, 
-        processing_class=tokenizer,
+        model=model,
+        ref_model=ref_model,
+        value_model=reward_model,
+        reward_model=reward_model,
+        tokenizer=tokenizer,
         train_dataset=train_data,
         eval_dataset=dummy_test,
+        data_collator=collator,
     )
     
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-    print(torch.cuda.memory_summary())
-    ppo_trainer.add_callback(CustomEvalCallback(ppo_trainer, test_data_helpful, test_data_harmless))    
+    ppo_trainer.add_callback(CustomEvalCallback(ppo_trainer, test_data_helpful, test_data_harmless))
     ppo_trainer.train()
     
     ppo_trainer.save_model(output_dir)
-    print(f"Model saved to {output_dir}")
     
     if args.report_to == "wandb":
         wandb.finish()

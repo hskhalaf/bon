@@ -13,6 +13,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, TrainerCallback
 from trl import DPOConfig, DPOTrainer
 from peft import LoraConfig
 from datasets import concatenate_datasets
+import numpy as np
+from accelerate import Accelerator
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 random.seed(42)
@@ -119,7 +121,28 @@ class CustomEvalCallback(TrainerCallback):
                        "harmlessness_eval_loss": results_harmless["eval_loss"]})
             
 def main(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "mps")
+    print("using", torch.cuda.device_count(), "GPUs!")
+    base_output_dir = args.output_dir
+    output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving outputs to: {output_dir}")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        use_fp16 = False
+        use_bf16 = True
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+        use_fp16 = False
+    else:
+        device = torch.device("cpu")
+        use_fp16 = False
+    print(f"Using device: {device}, FP16: {use_fp16}")
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
+
 
     if args.report_to == "wandb":
         wandb.init(project="dpo_group_training", config=args.__dict__)
@@ -152,9 +175,17 @@ def main(args):
     test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     test_data = concatenate_datasets([test_data_helpful, test_data_harmless])
 
-    model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
-    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.float16).to(device)
-    ref_model.eval()
+    accelerator = Accelerator()
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name, 
+        torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+        device_map={"": accelerator.local_process_index},)
+    
+    ref_model = AutoModelForCausalLM.from_pretrained(
+         args.model_name, 
+        torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+        device_map={"": accelerator.local_process_index},
+    )
     
     for param in ref_model.parameters():
         param.requires_grad = False
@@ -180,12 +211,12 @@ def main(args):
         learning_rate=args.learning_rate,
         eval_strategy="steps",
         eval_steps=100,
-        fp16=torch.cuda.is_available(),
+        fp16=use_fp16,
+        bf16=use_bf16,
     )
 
     trainer = DPOTrainer(
         model=model,
-        # ref_model=ref_model,
         args=training_args,
         tokenizer=tokenizer,
         train_dataset=train_data,
@@ -219,7 +250,8 @@ if __name__ == "__main__":
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--logging_steps", type=int, default=20)
-    parser.add_argument("--weight", type=float, default=0.8)
+    parser.add_argument("--weight", type=float, default=0.5)
+    parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
 
     main(args)
