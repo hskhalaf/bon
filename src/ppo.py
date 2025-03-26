@@ -267,7 +267,7 @@ def main(args):
         fp16=use_fp16,
         bf16=use_bf16,
     )
-    
+    dummy_test = test_data_harmless.select([0])
     ppo_trainer = PPOTrainer(
         args=ppo_config,
         model=model,           
@@ -276,6 +276,7 @@ def main(args):
         reward_model=reward_model, 
         processing_class=tokenizer,
         train_dataset=train_data,
+        eval_dataset=dummy_test,
     )
     
     os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
