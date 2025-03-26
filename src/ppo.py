@@ -9,7 +9,7 @@ import shutil
 import requests
 import pandas as pd
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, TrainerCallback
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, TrainerCallback, AutoModelForCausalLMWithValueHead
 from trl import PPOConfig, PPOTrainer
 from peft import LoraConfig, PeftModel, get_peft_model
 import numpy as np
@@ -228,8 +228,8 @@ def main(args):
     reward_model.eval()
     reward_model.config.pad_token_id = tokenizer.pad_token_id
 
-    base_model = AutoModelForCausalLM.from_pretrained(args.model_name)
-    base_ref_model = AutoModelForCausalLM.from_pretrained(args.model_name)
+    base_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name)
+    base_ref_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name)
     base_model.config.pad_token_id = tokenizer.pad_token_id
     base_ref_model.config.pad_token_id = tokenizer.pad_token_id
     peft_config = LoraConfig(
