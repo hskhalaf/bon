@@ -254,6 +254,11 @@ def main(args):
         bf16=use_bf16,
         seed=args.seed,
         data_seed=args.seed,
+        save_steps=300,
+        save_total_limit=5,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_avg",
+        greater_is_better=True,
     )
 
     dummy_test = test_data_harmless.select([0])
@@ -264,6 +269,7 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
+        eval_dataset=dummy_test,
         eval_dataset_helpful=test_data_helpful,
         eval_dataset_harmless=test_data_harmless,
     )
