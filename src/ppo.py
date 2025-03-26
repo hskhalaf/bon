@@ -12,10 +12,9 @@ from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, TrainerCallback
 from trl import PPOConfig, PPOTrainer
 from peft import LoraConfig, PeftModel, get_peft_model
-
+import numpy as np
+from accelerate import Accelerator
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-torch.manual_seed(42)
-random.seed(42)
 torch.cuda.empty_cache()
 
 def download_and_decompress(url, output_file):
@@ -162,9 +161,29 @@ def collator(data):
     return {key: [d[key] for d in data] for key in data[0]}
 
 def main(args):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("using", torch.cuda.device_count(), "GPUs!")
+    base_output_dir = args.output_dir
+    unique_output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
+    os.makedirs(unique_output_dir, exist_ok=True)
+    print(f"Saving outputs to: {unique_output_dir}")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        use_fp16 = False
+        use_bf16 = True
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+        use_fp16 = False
+    else:
+        device = torch.device("cpu")
+        use_fp16 = False
+    print(f"Using device: {device}, FP16: {use_fp16}")
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
     if args.report_to == "wandb":
-        wandb.init(project="ppo_training", config=vars(args))
+        wandb.init(project="ppo_training", config=args.__dict__)
     
     base_helpful = "https://huggingface.co/datasets/Anthropic/hh-rlhf/resolve/main/helpful-base/"
     for file in ["train.jsonl.gz", "test.jsonl.gz"]:
@@ -182,7 +201,11 @@ def main(args):
     config_path = os.path.join(adapter_path, "adapter_config.json")
     with open(config_path, 'r') as f:
         adapter_config = json.load(f)
-    base_model_name = adapter_config["base_model_name_or_path"]
+    reward_model_name = adapter_config["base_model_name_or_path"]
+
+    reward_tokenizer = AutoTokenizer.from_pretrained(reward_model_name)
+    if reward_tokenizer.pad_token is None:
+        reward_tokenizer.pad_token = reward_tokenizer.eos_token
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
@@ -199,13 +222,22 @@ def main(args):
     test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
     test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True, remove_columns=["query"])
     
-    base_reward_model = AutoModelForSequenceClassification.from_pretrained(base_model_name).to(device)
-    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path).to(device)
+    accelerator = Accelerator()
+    base_reward_model = AutoModelForSequenceClassification.from_pretrained(
+        reward_model_name, 
+        num_labels = 1,  
+        torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+        device_map={"": accelerator.local_process_index},
+    )
+    
+    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path, device_map={"": accelerator.local_process_index},)
     reward_model.eval()
+    reward_model.config.pad_token_id = reward_tokenizer.pad_token_id
 
     base_model = AutoModelForCausalLM.from_pretrained(args.model_name)
     base_ref_model = AutoModelForCausalLM.from_pretrained(args.model_name)
-
+    base_model.config.pad_token_id = tokenizer.pad_token_id
+    base_ref_model.config.pad_token_id = tokenizer.pad_token_id
     peft_config = LoraConfig(
         r=args.lora_rank,
         lora_alpha=32,
@@ -230,6 +262,13 @@ def main(args):
         max_grad_norm=1.0,
         lr_scheduler_type="cosine",
         warmup_steps=100,
+        save_steps=300,
+        save_total_limit=5,
+        seed = args.seed,
+        data_seed = args.seed,
+        report_to=args.report_to,
+        fp16=use_fp16,
+        bf16=use_bf16,
     )
     
     ppo_trainer = PPOTrainer(
@@ -241,12 +280,14 @@ def main(args):
         processing_class=tokenizer,
         train_dataset=train_data,
     )
-        
+    
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    print(torch.cuda.memory_summary())
     ppo_trainer.add_callback(CustomEvalCallback(ppo_trainer, test_data_helpful, test_data_harmless))    
     ppo_trainer.train()
-
-    model.save_pretrained(args.output_dir)
-    print(f"LoRA adapters saved to {args.output_dir}")
+    
+    ppo_trainer.save_model(unique_output_dir)
+    print(f"Model saved to {unique_output_dir}")
     
     if args.report_to == "wandb":
         wandb.finish()
@@ -270,5 +311,6 @@ if __name__ == "__main__":
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--weight", type=float, default=0.5)
     parser.add_argument("--logging_steps", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=20)
     args = parser.parse_args()
     main(args)
