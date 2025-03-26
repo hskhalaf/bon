@@ -60,18 +60,21 @@ def process_conversation(text):
 
 def process_data(dataset):
     data_list = dataset.to_list()
+    # df = pd.DataFrame({
+    #    "query": [process_conversation(extract_prompt(entry["chosen"]) + " Assistant:") for entry in data_list],
+   #  })
     df = pd.DataFrame({
-        "query": [process_conversation(extract_prompt(entry["chosen"]) + " Assistant:") for entry in data_list],
-    })
+    "query": [q for entry in dataset.to_list() if (q := process_conversation(extract_prompt(entry["chosen"]) + " Assistant:"))]
+})
+
     return Dataset.from_pandas(df)
 
 def tokenize_fn(batch, tokenizer, max_length):
-    prompt = tokenizer(batch["query"], truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
-
-    return {
-        "input_ids": prompt["input_ids"],
-        "attention_mask": prompt["attention_mask"],
-    }
+    prompts = [tokenizer.apply_chat_template(x, tokenize=False, add_generation_prompt=True) for x in batch["query"]]
+    prompts = tokenizer(prompts, truncation=True, padding="max_length", max_length=max_length, return_attention_mask=True)
+    batch["input_ids"] = prompts["input_ids"]
+    batch["attention_mask"] = prompts["attention_mask"]
+    return batch
 
 def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
     if num_samples > 0:
@@ -149,7 +152,7 @@ class CustomEvalCallback(TrainerCallback):
         print(f"{name.capitalize()} mean reward: {sum(rewards) / len(rewards):.4f}" if rewards else f"{name.capitalize()} dataset empty")
         return rewards
 
-def get_rewards_from_model(queries, responses, reward_model, tokenizer, device, max_length=512):
+def get_rewards_from_model(queries, responses, reward_model, reward_tokenizer, device, max_length=512):
     inputs = [q + r for q, r in zip(queries, responses)]
     tokenized = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
     with torch.no_grad():
@@ -163,9 +166,9 @@ def collator(data):
 def main(args):
     print("using", torch.cuda.device_count(), "GPUs!")
     base_output_dir = args.output_dir
-    unique_output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
-    os.makedirs(unique_output_dir, exist_ok=True)
-    print(f"Saving outputs to: {unique_output_dir}")
+    output_dir = os.path.join(base_output_dir, f"{args.model_name.replace('/', '_')}_seed{args.seed}")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Saving outputs to: {output_dir}")
     if torch.cuda.is_available():
         device = torch.device("cuda")
         use_fp16 = False
@@ -294,9 +297,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B")
-    parser.add_argument("--reward_model_path", type=str, default="Qwen/Qwen2.5-0.5B")
-    parser.add_argument("--output_dir", type=str, default="./ppo_model")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--reward_model_path", type=str, default="/mnt/shared-research-data/reward_model_group/meta-llama_Llama-3.2-1B-Instruct_seed1")
+    parser.add_argument("--output_dir", type=str, default="/mnt/shared-research-data/ppo_model")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
     parser.add_argument("--ppo_epochs", type=int, default=4)
@@ -306,11 +309,11 @@ if __name__ == "__main__":
     parser.add_argument("--kl_coef", type=float, default=0.05)
     parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--lora_rank", type=int, default=16)
-    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="none")
+    parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
     parser.add_argument("--num_rows", type=int, default=1000)
     parser.add_argument("--test_size", type=int, default=100)
     parser.add_argument("--weight", type=float, default=0.5)
     parser.add_argument("--logging_steps", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
     main(args)
