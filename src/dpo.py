@@ -15,6 +15,7 @@ from peft import LoraConfig
 from datasets import concatenate_datasets
 import numpy as np
 from accelerate import Accelerator
+import torch.nn.functional as F
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 random.seed(42)
@@ -85,33 +86,33 @@ def tokenize_fn(batch, tokenizer, max_length):
         "rejected_attention_mask": rejected["attention_mask"],
     }
 
-def tokenize_eval_fn(batch, tokenizer, max_length):
-    formatted_chosen = [
-        tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]},
-            {"role": "assistant", "content": batch["chosen"][i]}
-        ], tokenize=False) 
-        for i in range(len(batch["chosen"]))
-    ]
-    formatted_rejected = [
-        tokenizer.apply_chat_template([
-            {"role": "user", "content": batch["prompt"][i]},
-            {"role": "assistant", "content": batch["rejected"][i]}
-        ], tokenize=False) 
-        for i in range(len(batch["rejected"]))
-    ]
+# def tokenize_eval_fn(batch, tokenizer, max_length):
+#     formatted_chosen = [
+#         tokenizer.apply_chat_template([
+#             {"role": "user", "content": batch["prompt"][i]},
+#             {"role": "assistant", "content": batch["chosen"][i]}
+#         ], tokenize=False) 
+#         for i in range(len(batch["chosen"]))
+#     ]
+#     formatted_rejected = [
+#         tokenizer.apply_chat_template([
+#             {"role": "user", "content": batch["prompt"][i]},
+#             {"role": "assistant", "content": batch["rejected"][i]}
+#         ], tokenize=False) 
+#         for i in range(len(batch["rejected"]))
+#     ]
     
-    chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-    rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+#     chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
+#     rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
 
-    return {
-        "row_id": batch["row_id"],
-        "dID": batch["dID"],
-        "chosen_input_ids": chosen["input_ids"],
-        "chosen_attention_mask": chosen["attention_mask"],
-        "rejected_input_ids": rejected["input_ids"],
-        "rejected_attention_mask": rejected["attention_mask"],
-    }
+#     return {
+#         "row_id": batch["row_id"],
+#         "dID": batch["dID"],
+#         "chosen_input_ids": chosen["input_ids"],
+#         "chosen_attention_mask": chosen["attention_mask"],
+#         "rejected_input_ids": rejected["input_ids"],
+#         "rejected_attention_mask": rejected["attention_mask"],
+#     }
 
 def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
     if num_samples > 0:
@@ -131,6 +132,29 @@ def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
         return Dataset.from_list(combined_data)
     return Dataset.from_list([])
 
+def compute_log_probs_on_answer(model, prompt_ids, prompt_mask, answer_ids, answer_mask):
+    input_ids = torch.cat([prompt_ids, answer_ids], dim=1)
+    attention_mask = torch.cat([prompt_mask, answer_mask], dim=1)
+
+    with torch.no_grad():
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
+
+    shift_logits = logits[:, :-1, :]
+    shift_labels = input_ids[:, 1:]
+    shift_mask = attention_mask[:, 1:]
+
+    log_probs = F.log_softmax(shift_logits, dim=-1)
+    selected_log_probs = torch.gather(log_probs, dim=2, index=shift_labels.unsqueeze(-1)).squeeze(-1)
+
+    prompt_lengths = prompt_mask.sum(dim=1)
+    full_mask = torch.zeros_like(shift_mask)
+    for i, start in enumerate(prompt_lengths):
+        full_mask[i, start-1:] = 1
+
+    answer_log_probs = selected_log_probs * full_mask
+    return answer_log_probs.sum(dim=1)
+
+
 def compute_custom_metric(eval_dataset, model, batch_size):
     device = model.device
     model.eval()
@@ -139,15 +163,16 @@ def compute_custom_metric(eval_dataset, model, batch_size):
     all_rejected_scores = []
     for i in range(0, total_examples, batch_size):
         batch_indices = range(i, min(i + batch_size, total_examples))
-        chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["chosen_input_ids"]) for j in batch_indices]).to(device)
-        rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["rejected_input_ids"]) for j in batch_indices]).to(device)
-        chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["chosen_attention_mask"]) for j in batch_indices]).to(device)
-        rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["rejected_attention_mask"]) for j in batch_indices]).to(device)
-        with torch.no_grad():
-            logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
-            logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
-            rewards_chosen = logits_chosen[:, 0]
-            rewards_rejected = logits_rejected[:, 0]
+        prompt_ids = torch.stack([torch.tensor(eval_dataset[j]["prompt_input_ids"]) for j in batch_indices]).to(device)
+        prompt_mask = torch.stack([torch.tensor(eval_dataset[j]["prompt_attention_mask"]) for j in batch_indices]).to(device)
+        chosen_ids = torch.stack([torch.tensor(eval_dataset[j]["chosen_input_ids"]) for j in batch_indices]).to(device)
+        chosen_mask = torch.stack([torch.tensor(eval_dataset[j]["chosen_attention_mask"]) for j in batch_indices]).to(device)
+        rejected_ids = torch.stack([torch.tensor(eval_dataset[j]["rejected_input_ids"]) for j in batch_indices]).to(device)
+        rejected_mask = torch.stack([torch.tensor(eval_dataset[j]["rejected_attention_mask"]) for j in batch_indices]).to(device)
+
+        rewards_chosen = compute_log_probs_on_answer(model, prompt_ids, prompt_mask, chosen_ids, chosen_mask)
+        rewards_rejected = compute_log_probs_on_answer(model, prompt_ids, prompt_mask, rejected_ids, rejected_mask)
+        
         all_chosen_scores.append(rewards_chosen.cpu())
         all_rejected_scores.append(rewards_rejected.cpu())
     all_chosen_scores = torch.cat(all_chosen_scores).tolist()
@@ -221,8 +246,8 @@ def main(args):
     test_data_harmless = process_default(test_data_harmless)
 
     train_data = train_data.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
-    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), batched=True)
-    test_data_harmless = test_data_harmless.map(lambda batch: tokenize_eval_fn(batch, tokenizer, args.max_length), batched=True)
+    test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
+    test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
     accelerator = Accelerator()
     model = AutoModelForCausalLM.from_pretrained(
