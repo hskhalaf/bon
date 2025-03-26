@@ -119,7 +119,47 @@ class CustomEvalCallback(TrainerCallback):
         if args.report_to == "wandb":
             wandb.log({"helpfulness_eval_loss": results_helpful["eval_loss"],
                        "harmlessness_eval_loss": results_harmless["eval_loss"]})
-            
+
+def compute_custom_metric(eval_dataset, model, batch_size):
+    device = model.device
+    model.eval()
+    total_examples = len(eval_dataset)
+    all_chosen_scores = []
+    all_rejected_scores = []
+    for i in range(0, total_examples, batch_size):
+        batch_indices = range(i, min(i + batch_size, total_examples))
+        chosen_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_chosen"]) for j in batch_indices]).to(device)
+        rejected_ids_batch = torch.stack([torch.tensor(eval_dataset[j]["input_ids_rejected"]) for j in batch_indices]).to(device)
+        chosen_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_chosen"]) for j in batch_indices]).to(device)
+        rejected_masks_batch = torch.stack([torch.tensor(eval_dataset[j]["attention_mask_rejected"]) for j in batch_indices]).to(device)
+        with torch.no_grad():
+            logits_chosen = model(input_ids=chosen_ids_batch, attention_mask=chosen_masks_batch).logits
+            logits_rejected = model(input_ids=rejected_ids_batch, attention_mask=rejected_masks_batch).logits
+            rewards_chosen = logits_chosen[:, 0]
+            rewards_rejected = logits_rejected[:, 0]
+        all_chosen_scores.append(rewards_chosen.cpu())
+        all_rejected_scores.append(rewards_rejected.cpu())
+    all_chosen_scores = torch.cat(all_chosen_scores).tolist()
+    all_rejected_scores = torch.cat(all_rejected_scores).tolist()
+    results = [all_chosen_scores[i] > all_rejected_scores[i] for i in range(len(all_chosen_scores))]
+    torch.cuda.empty_cache()
+    return sum(results) / len(results) if results else 0
+
+class CustomDPOTrainer(DPOTrainer):
+    def __init__(self, *args, eval_dataset_helpful=None, eval_dataset_harmless=None, weight=1.0, eval_batch_size=8, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.eval_dataset_helpful = eval_dataset_helpful
+        self.eval_dataset_harmless = eval_dataset_harmless
+        self.weight = weight
+        self.eval_batch_size = eval_batch_size
+
+    def evaluate(self, eval_dataset=None, **kwargs):
+        helpful = compute_custom_metric(self.eval_dataset_helpful, self.model, self.eval_batch_size)
+        harmless = compute_custom_metric(self.eval_dataset_harmless, self.model, self.eval_batch_size)
+        metrics = {"eval_helpful_accuracy": helpful, "eval_harmless_accuracy": harmless, "eval_avg": helpful * self.weight + harmless * (1 - self.weight)}
+        self.log(metrics)
+        return metrics
+     
 def main(args):
     print("using", torch.cuda.device_count(), "GPUs!")
     base_output_dir = args.output_dir
@@ -142,7 +182,6 @@ def main(args):
     torch.cuda.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
-
 
     if args.report_to == "wandb":
         wandb.init(project="dpo_group_training", config=args.__dict__)
@@ -210,25 +249,25 @@ def main(args):
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         learning_rate=args.learning_rate,
         eval_strategy="steps",
-        eval_steps=100,
+        eval_steps=args.logging_steps,
         fp16=use_fp16,
         bf16=use_bf16,
         seed=args.seed,
         data_seed=args.seed,
     )
 
-    trainer = DPOTrainer(
+    dummy_test = test_data_harmless.select([0])
+
+    trainer = CustomDPOTrainer(
         model=model,
         args=training_args,
         tokenizer=tokenizer,
         train_dataset=train_data,
         peft_config=peft_config,
-        eval_dataset=test_data,
+        eval_dataset=dummy_test,
     )
-
-    eval_callback = CustomEvalCallback(trainer, test_data_helpful, test_data_harmless)
-    trainer.add_callback(eval_callback)
-
+    os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    print(torch.cuda.memory_summary())
     trainer.train()
 
     if args.report_to == "wandb":
