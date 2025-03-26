@@ -280,7 +280,7 @@ def main(args):
         ref_model=ref_model,
         value_model=reward_model,
         reward_model=reward_model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=train_data,
         eval_dataset=dummy_test,
         data_collator=collator,
