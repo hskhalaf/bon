@@ -1,4 +1,5 @@
 import argparse
+from transformers import GenerationConfig
 import os
 import json
 import random
@@ -229,8 +230,19 @@ def main(args):
     reward_model.eval()
     reward_model.config.pad_token_id = tokenizer.pad_token_id
 
-    base_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
-    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
+    # base_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
+    # ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
+    ref_model = AutoModelForCausalLM.from_pretrained(
+    args.model_name, 
+    torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, 
+    device_map={"": accelerator.local_process_index}
+)
+
+# Then wrap it with ValueHead
+    base_model = AutoModelForCausalLMWithValueHead.from_pretrained(
+    ref_model, 
+    torch_dtype=torch.bfloat16 if use_bf16 else torch.float32
+)
     base_model.config.pad_token_id = tokenizer.pad_token_id
     ref_model.config.pad_token_id = tokenizer.pad_token_id
     peft_config = LoraConfig(
@@ -241,7 +253,8 @@ def main(args):
         bias="none",
         task_type="CAUSAL_LM"
     )
-    
+    # base_model.generation_config = AutoModelForCausalLM.from_pretrained(args.model_name).generation_config
+    # base_model.generation_config = GenerationConfig.from_pretrained(args.model_name)
     model = get_peft_model(base_model, peft_config)
     
     ppo_config = PPOConfig(
