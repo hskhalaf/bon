@@ -59,14 +59,9 @@ def process_conversation(text):
     return messages
 
 def process_data(dataset):
-    data_list = dataset.to_list()
-    # df = pd.DataFrame({
-    #    "query": [process_conversation(extract_prompt(entry["chosen"]) + " Assistant:") for entry in data_list],
-   #  })
     df = pd.DataFrame({
     "query": [q for entry in dataset.to_list() if (q := process_conversation(extract_prompt(entry["chosen"]) + " Assistant:"))]
-})
-
+    })
     return Dataset.from_pandas(df)
 
 def tokenize_fn(batch, tokenizer, max_length):
@@ -152,7 +147,7 @@ class CustomEvalCallback(TrainerCallback):
         print(f"{name.capitalize()} mean reward: {sum(rewards) / len(rewards):.4f}" if rewards else f"{name.capitalize()} dataset empty")
         return rewards
 
-def get_rewards_from_model(queries, responses, reward_model, reward_tokenizer, device, max_length=512):
+def get_rewards_from_model(queries, responses, reward_model, tokenizer, device, max_length=512):
     inputs = [q + r for q, r in zip(queries, responses)]
     tokenized = tokenizer(inputs, return_tensors="pt", padding=True, truncation=True, max_length=max_length).to(device)
     with torch.no_grad():
@@ -205,10 +200,6 @@ def main(args):
     with open(config_path, 'r') as f:
         adapter_config = json.load(f)
     reward_model_name = adapter_config["base_model_name_or_path"]
-
-    reward_tokenizer = AutoTokenizer.from_pretrained(reward_model_name)
-    if reward_tokenizer.pad_token is None:
-        reward_tokenizer.pad_token = reward_tokenizer.eos_token
     
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     if tokenizer.pad_token is None:
@@ -235,7 +226,7 @@ def main(args):
     
     reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path, device_map={"": accelerator.local_process_index},)
     reward_model.eval()
-    reward_model.config.pad_token_id = reward_tokenizer.pad_token_id
+    reward_model.config.pad_token_id = tokenizer.pad_token_id
 
     base_model = AutoModelForCausalLM.from_pretrained(args.model_name)
     base_ref_model = AutoModelForCausalLM.from_pretrained(args.model_name)
@@ -289,15 +280,15 @@ def main(args):
     ppo_trainer.add_callback(CustomEvalCallback(ppo_trainer, test_data_helpful, test_data_harmless))    
     ppo_trainer.train()
     
-    ppo_trainer.save_model(unique_output_dir)
-    print(f"Model saved to {unique_output_dir}")
+    ppo_trainer.save_model(output_dir)
+    print(f"Model saved to {output_dir}")
     
     if args.report_to == "wandb":
         wandb.finish()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B-Instruct")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
     parser.add_argument("--reward_model_path", type=str, default="/mnt/shared-research-data/reward_model_group/meta-llama_Llama-3.2-1B-Instruct_seed1")
     parser.add_argument("--output_dir", type=str, default="/mnt/shared-research-data/ppo_model")
     parser.add_argument("--batch_size", type=int, default=8)
