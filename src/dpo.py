@@ -213,6 +213,8 @@ def main(args):
         eval_steps=100,
         fp16=use_fp16,
         bf16=use_bf16,
+        seed=args.seed,
+        data_seed=args.seed,
     )
 
     trainer = DPOTrainer(
@@ -237,14 +239,14 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="gpt2")
-    parser.add_argument("--output_dir", type=str, default="./dpo_model_group")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
+    parser.add_argument("--output_dir", type=str, default="/mnt/shared-research-data/dpo/meta-llama_Llama-3.2-1B-Instruct_seed1")
     parser.add_argument("--per_device_train_batch_size", type=int, default=10)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1500)
-    parser.add_argument("--beta", type=float, default=0.0001)
+    parser.add_argument("--beta", type=float, default=0.01)
     parser.add_argument("--lora_rank", type=int, default=12)
     parser.add_argument("--num_rows", type=int, default=1000)
     parser.add_argument("--test_size", type=int, default=100)
