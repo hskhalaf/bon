@@ -225,12 +225,12 @@ def main(args):
         device_map={"": accelerator.local_process_index},
     )
     
-    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path, device_map={"": accelerator.local_process_index},)
+    reward_model = PeftModel.from_pretrained(base_reward_model, adapter_path, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
     reward_model.eval()
     reward_model.config.pad_token_id = tokenizer.pad_token_id
 
-    base_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name)
-    ref_model = create_reference_model(base_model)
+    base_model = AutoModelForCausalLMWithValueHead.from_pretrained(args.model_name, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
+    ref_model = AutoModelForCausalLM.from_pretrained(args.model_name, torch_dtype=torch.bfloat16 if use_bf16 else torch.float32, device_map={"": accelerator.local_process_index},)
     base_model.config.pad_token_id = tokenizer.pad_token_id
     ref_model.config.pad_token_id = tokenizer.pad_token_id
     peft_config = LoraConfig(
@@ -243,7 +243,6 @@ def main(args):
     )
     
     model = get_peft_model(base_model, peft_config)
-    model.generation_config = base_model.generation_config
     
     ppo_config = PPOConfig(
         output_dir=args.output_dir,
