@@ -172,7 +172,7 @@ def compute_custom_metric(eval_dataset, model, batch_size):
 
         rewards_chosen = compute_log_probs_on_answer(model, prompt_ids, prompt_mask, chosen_ids, chosen_mask)
         rewards_rejected = compute_log_probs_on_answer(model, prompt_ids, prompt_mask, rejected_ids, rejected_mask)
-        
+
         all_chosen_scores.append(rewards_chosen.cpu())
         all_rejected_scores.append(rewards_rejected.cpu())
     all_chosen_scores = torch.cat(all_chosen_scores).tolist()
@@ -321,21 +321,20 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.2-1B-Instruct")
-    parser.add_argument("--output_dir", type=str, default="/mnt/shared-research-data/dpo/meta-llama_Llama-3.2-1B-Instruct_seed1")
+    parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.1-8B-Instruct")
+    parser.add_argument("--output_dir", type=str, default="/mnt/shared-research-data/dpo/")
     parser.add_argument("--per_device_train_batch_size", type=int, default=10)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1500)
-    parser.add_argument("--beta", type=float, default=0.01)
+    parser.add_argument("--beta", type=float, default=0.1)
     parser.add_argument("--lora_rank", type=int, default=12)
-    parser.add_argument("--num_rows", type=int, default=1000)
-    parser.add_argument("--test_size", type=int, default=100)
+    parser.add_argument("--num_rows", type=int, default=30000)
+    parser.add_argument("--test_size", type=int, default=1000)
     parser.add_argument("--report_to", type=str, choices=["none", "wandb"], default="wandb")
-    parser.add_argument("--logging_steps", type=int, default=20)
+    parser.add_argument("--logging_steps", type=int, default=30)
     parser.add_argument("--weight", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=1)
     args = parser.parse_args()
-
     main(args)
