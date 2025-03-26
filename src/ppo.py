@@ -9,8 +9,8 @@ import shutil
 import requests
 import pandas as pd
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, TrainerCallback, AutoModelForCausalLMWithValueHead
-from trl import PPOConfig, PPOTrainer
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, TrainerCallback
+from trl import PPOConfig, PPOTrainer, AutoModelForCausalLMWithValueHead
 from peft import LoraConfig, PeftModel, get_peft_model
 import numpy as np
 from accelerate import Accelerator
