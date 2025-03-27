@@ -1,5 +1,6 @@
 import argparse
 import os
+from unsloth import FastLanguageModel 
 import json
 import random
 import torch
@@ -16,7 +17,6 @@ from datasets import concatenate_datasets
 import numpy as np
 from accelerate import Accelerator
 import torch.nn.functional as F
-from unsloth import FastLanguageModel 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 random.seed(42)
@@ -210,16 +210,16 @@ def main(args):
     model, tokenizer = FastLanguageModel.from_pretrained(
             model_name = "unsloth/Meta-Llama-3.1-8B-Instruct",
             max_seq_length = args.max_length,
-            torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+            dtype=torch.bfloat16 if use_bf16 else torch.float32,
             device_map = "auto",
     )
 
-    ref_model = FastLanguageModel.from_pretrained(
-            model_name = "unsloth/Meta-Llama-3.1-8B-Instruct",
-            max_seq_length = args.max_length,
-            torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
-            device_map = "auto",
-    )
+    # ref_model = FastLanguageModel.from_pretrained(
+    #         model_name = "unsloth/Meta-Llama-3.1-8B-Instruct",
+    #         max_seq_length = args.max_length,
+    #         torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+    #         device_map = "auto",
+    # )
 
     # tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -251,7 +251,7 @@ def main(args):
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r = 8,
+        r = args.lora_rank,
         target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
                         "gate_proj", "up_proj", "down_proj",],
         lora_alpha = 16,
@@ -264,8 +264,8 @@ def main(args):
     )
 
     
-    for param in ref_model.parameters():
-        param.requires_grad = False
+    # for param in ref_model.parameters():
+    #     param.requires_grad = False
 
     # peft_config = LoraConfig(
     #     task_type="CAUSAL_LM",
