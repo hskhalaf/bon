@@ -16,6 +16,7 @@ from datasets import concatenate_datasets
 import numpy as np
 from accelerate import Accelerator
 import torch.nn.functional as F
+from unsloth import FastLanguageModel 
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 random.seed(42)
@@ -85,34 +86,6 @@ def tokenize_fn(batch, tokenizer, max_length):
         "rejected_input_ids": rejected["input_ids"],
         "rejected_attention_mask": rejected["attention_mask"],
     }
-
-# def tokenize_eval_fn(batch, tokenizer, max_length):
-#     formatted_chosen = [
-#         tokenizer.apply_chat_template([
-#             {"role": "user", "content": batch["prompt"][i]},
-#             {"role": "assistant", "content": batch["chosen"][i]}
-#         ], tokenize=False) 
-#         for i in range(len(batch["chosen"]))
-#     ]
-#     formatted_rejected = [
-#         tokenizer.apply_chat_template([
-#             {"role": "user", "content": batch["prompt"][i]},
-#             {"role": "assistant", "content": batch["rejected"][i]}
-#         ], tokenize=False) 
-#         for i in range(len(batch["rejected"]))
-#     ]
-    
-#     chosen = tokenizer(formatted_chosen, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-#     rejected = tokenizer(formatted_rejected, truncation=True, padding="max_length", max_length=max_length, return_tensors="pt")
-
-#     return {
-#         "row_id": batch["row_id"],
-#         "dID": batch["dID"],
-#         "chosen_input_ids": chosen["input_ids"],
-#         "chosen_attention_mask": chosen["attention_mask"],
-#         "rejected_input_ids": rejected["input_ids"],
-#         "rejected_attention_mask": rejected["attention_mask"],
-#     }
 
 def sample_and_shuffle(data_helpful, data_harmless, num_samples, weight):
     if num_samples > 0:
@@ -234,7 +207,21 @@ def main(args):
     train_data_harmless = Dataset.from_list(load_jsonl("train.jsonl"))
     test_data_harmless = Dataset.from_list(load_jsonl("test.jsonl"))
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name = "unsloth/Meta-Llama-3.1-8B-Instruct",
+            max_seq_length = args.max_length,
+            torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+            device_map = "auto",
+    )
+
+    ref_model = FastLanguageModel.from_pretrained(
+            model_name = "unsloth/Meta-Llama-3.1-8B-Instruct",
+            max_seq_length = args.max_length,
+            torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+            device_map = "auto",
+    )
+
+    # tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
     train_data = sample_and_shuffle(train_data_helpful, train_data_harmless, args.num_rows, args.weight)
@@ -249,28 +236,44 @@ def main(args):
     test_data_helpful = test_data_helpful.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
     test_data_harmless = test_data_harmless.map(lambda batch: tokenize_fn(batch, tokenizer, args.max_length), batched=True)
 
-    accelerator = Accelerator()
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name, 
-        torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
-        device_map={"": accelerator.local_process_index},)
+    # accelerator = Accelerator()
+    # model = AutoModelForCausalLM.from_pretrained(
+    #     args.model_name, 
+    #     torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+    #     device_map={"": accelerator.local_process_index},)
     
-    ref_model = AutoModelForCausalLM.from_pretrained(
-         args.model_name, 
-        torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
-        device_map={"": accelerator.local_process_index},
+    # ref_model = AutoModelForCausalLM.from_pretrained(
+    #      args.model_name, 
+    #     torch_dtype=torch.bfloat16 if use_bf16 else torch.float32,
+    #     device_map={"": accelerator.local_process_index},
+    # )
+
+
+    model = FastLanguageModel.get_peft_model(
+        model,
+        r = 8,
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj",],
+        lora_alpha = 16,
+        lora_dropout = 0.1, # Supports any, but = 0 is optimized
+        bias = "none",    # Supports any, but = "none" is optimized
+        # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+        use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
+        random_state = args.seed,
+        max_seq_length = args.max_length,
     )
+
     
     for param in ref_model.parameters():
         param.requires_grad = False
 
-    peft_config = LoraConfig(
-        task_type="CAUSAL_LM",
-        inference_mode=False,
-        r=args.lora_rank,
-        lora_alpha=16,
-        lora_dropout=0.1,
-    )
+    # peft_config = LoraConfig(
+    #     task_type="CAUSAL_LM",
+    #     inference_mode=False,
+    #     r=args.lora_rank,
+    #     lora_alpha=16,
+    #     lora_dropout=0.1,
+    # )
 
     training_args = DPOConfig(
         output_dir=args.output_dir,
@@ -303,7 +306,7 @@ def main(args):
         args=training_args,
         processing_class=tokenizer,
         train_dataset=train_data,
-        peft_config=peft_config,
+        # peft_config=peft_config,
         eval_dataset=dummy_test,
         eval_dataset_helpful=test_data_helpful,
         eval_dataset_harmless=test_data_harmless,
@@ -323,9 +326,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="meta-llama/Llama-3.1-8B-Instruct")
     parser.add_argument("--output_dir", type=str, default="/mnt/shared-research-data/dpo/")
-    parser.add_argument("--per_device_train_batch_size", type=int, default=10)
+    parser.add_argument("--per_device_train_batch_size", type=int, default=8)
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2)
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=4)
     parser.add_argument("--learning_rate", type=float, default=5e-5)
     parser.add_argument("--max_length", type=int, default=1500)
     parser.add_argument("--beta", type=float, default=0.1)
